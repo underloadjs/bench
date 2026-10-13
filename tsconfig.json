@@ -1,0 +1,6 @@
+{
+    "extends": "../../../tsconfig.json",
+    // All source (core/, dashboard/, dev app shell, entry) lives under src/;
+    // config files at the package root are typechecked too.
+    "include": ["src/**/*.ts", "src/**/*.tsx", "*.ts"]
+}
