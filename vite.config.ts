@@ -2,8 +2,11 @@
 // Mirrors the distribution/* apps (e.g. comfy-dashboard): react plugin + a
 // fixed port so `yarn workspace @agentic/bench dev` always lands in one place.
 // The @config/environment alias resolves the workspace config package's
-// source (core/provider.ts imports LOCAL_AREA_NETWORK_HOST_NAME and
-// LOCAL_AREA_NETWORK_PROVIDER_PORT from it).
+// source when inside the noobscript monorepo, and the vendored local/ shim
+// for standalone installs (core/provider.ts imports
+// LOCAL_AREA_NETWORK_HOST_NAME and LOCAL_AREA_NETWORK_PROVIDER_PORT from it
+// either way).
+import fs from 'node:fs';
 import path from 'node:path';
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
@@ -12,7 +15,11 @@ export default defineConfig({
     plugins: [react()],
     resolve: {
         alias: {
-            '@config/environment': path.resolve(__dirname, '../../../config/environment/src/index.ts')
+            '@config/environment': fs.existsSync(
+                path.resolve(__dirname, '../../../config/environment/src/index.ts')
+            )
+                ? path.resolve(__dirname, '../../../config/environment/src/index.ts')
+                : path.resolve(__dirname, 'local/config/environment.ts')
         }
     },
     server: {

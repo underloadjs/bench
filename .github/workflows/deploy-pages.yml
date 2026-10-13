@@ -4,19 +4,12 @@
 # build passes a matching Vite base path (--base=/<repo-name>/) — asset URLs
 # must resolve from the subpath, never the domain root.
 #
-# The package builds as part of the noobscript yarn workspace: it imports the
-# sibling workspace packages (@presource/core, @presource/react, and
-# @config/environment, which vite aliases to ../../../config/environment), so
-# CI checks out the parent monorepo and syncs this repo's checkout into its
-# packages/underload/bench slot before installing and building.
+# The build is self-contained: @presource/core and @presource/react resolve
+# from the public npm registry, and @config/environment (a private monorepo
+# package that is NOT published) aliases to the vendored
+# local/config/environment.ts shim when the monorepo checkout is not present.
 #
-# One-time setup:
-#   1. Repo Settings -> Pages -> Source: "GitHub Actions".
-#   2. NQQT/noobscript is private — the default GITHUB_TOKEN cannot read it.
-#      Create a fine-grained PAT with read access to NQQT/noobscript and add
-#      it as the repository secret MONOREPO_TOKEN (Settings -> Secrets and
-#      variables -> Actions). The workflow falls back to the default token
-#      once the monorepo becomes public.
+# One-time setup: repo Settings -> Pages -> Source: "GitHub Actions".
 
 name: Deploy bench dashboard to GitHub Pages
 
@@ -34,55 +27,34 @@ concurrency:
     group: pages
     cancel-in-progress: false
 
-env:
-    MONOREPO_REPOSITORY: NQQT/noobscript
-    MONOREPO_DIR: noobscript
-    BENCH_DIR: noobscript/packages/underload/bench
-
 jobs:
     build:
-        runs-on: ubuntu-latest
+        # Pinned while ubuntu-latest migrates to Ubuntu 26 (runner-images #14748).
+        runs-on: ubuntu-24.04
         steps:
-            - name: Checkout bench
+            - name: Checkout
               uses: actions/checkout@v5
-
-            - name: Checkout parent monorepo
-              uses: actions/checkout@v5
-              with:
-                  repository: ${{ env.MONOREPO_REPOSITORY }}
-                  path: ${{ env.MONOREPO_DIR }}
-                  # Private repo -> PAT; falls back to the default token.
-                  token: ${{ secrets.MONOREPO_TOKEN || github.token }}
-
-            - name: Sync bench into the monorepo tree
-              run: |
-                  rm -rf ${{ env.BENCH_DIR }}
-                  mkdir -p "$(dirname ${{ env.BENCH_DIR }})"
-                  cp -a bench/. ${{ env.BENCH_DIR }}/
 
             - name: Setup Node
               uses: actions/setup-node@v5
               with:
                   node-version: 24
                   cache: yarn
-                  cache-dependency-path: ${{ env.MONOREPO_DIR }}/yarn.lock
 
             - name: Install dependencies
-              working-directory: ${{ env.MONOREPO_DIR }}
-              run: yarn install
+              run: yarn install --frozen-lockfile
 
             - name: Build dashboard
-              working-directory: ${{ env.MONOREPO_DIR }}
-              run: yarn workspace @underload/bench build --base=/${{ github.event.repository.name }}/
+              run: yarn build --base=/${{ github.event.repository.name }}/
 
             - name: Upload Pages artifact
               uses: actions/upload-pages-artifact@v3
               with:
-                  path: ${{ env.BENCH_DIR }}/dist
+                  path: dist
 
     deploy:
         needs: build
-        runs-on: ubuntu-latest
+        runs-on: ubuntu-24.04
         environment:
             name: github-pages
             url: ${{ steps.deployment.outputs.page_url }}

@@ -1,6 +1,20 @@
 {
     "extends": "../../../tsconfig.json",
+    "compilerOptions": {
+        // @config/environment is a private monorepo package, not a published
+        // dependency: resolve it through the workspace link when present
+        // (node_modules package — exempt from rootDir), falling back to the
+        // vendored local/ shim for standalone installs (mirrors the
+        // vite/vitest alias behaviour).
+        "paths": {
+            "@config/environment": [
+                "./node_modules/@config/environment",
+                "./local/config/environment.ts"
+            ]
+        }
+    },
     // All source (core/, dashboard/, dev app shell, entry) lives under src/;
-    // config files at the package root are typechecked too.
-    "include": ["src/**/*.ts", "src/**/*.tsx", "*.ts"]
+    // config files at the package root and the local/ config shim are
+    // typechecked too.
+    "include": ["src/**/*.ts", "src/**/*.tsx", "*.ts", "local/**/*.ts"]
 }
