@@ -1,6 +1,25 @@
 {
-    "extends": "../../../tsconfig.json",
+    // Self-contained config (no `extends` outside the repo): this package is a
+    // standalone GitHub repo (git@github.com:underloadjs/bench) where
+    // ../../../tsconfig.json does not exist, and Vite 8's transformer resolves
+    // the tsconfig extends chain during dashboard builds (CI failure:
+    // "Tsconfig not found /home/runner/tsconfig.json"). Options mirror the
+    // noobscript workspace root tsconfig.json so behavior is identical when
+    // the package is developed inside the workspace.
     "compilerOptions": {
+        "module": "ESNext",
+        "target": "ESNext",
+        "moduleResolution": "bundler",
+        "jsx": "react",
+        "skipLibCheck": true,
+        "allowJs": true,
+        "experimentalDecorators": true,
+        "declaration": true,
+        "esModuleInterop": true,
+        "strict": true,
+        "outDir": "./lib",
+        "lib": ["decorators", "dom", "es5", "scripthost", "es2015.collection"],
+        "types": ["node", "vitest/globals"],
         // @config/environment is a private monorepo package, not a published
         // dependency: resolve it through the workspace link when present
         // (node_modules package — exempt from rootDir), falling back to the
@@ -13,6 +32,7 @@
             ]
         }
     },
+    "exclude": ["node_modules", "Temp", "**/*.test.ts", "**/dist/*", "**/lib/*"],
     // All source (core/, dashboard/, dev app shell, entry) lives under src/;
     // config files at the package root and the local/ config shim are
     // typechecked too.
