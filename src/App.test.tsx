@@ -16,10 +16,25 @@
 //      the stub answers the streaming chat/completions POST, the run
 //      completes, and the status pill settles on DONE with real stats.
 import React from 'react';
+import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi, afterEach } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { App } from './App';
 import { DEFAULT_PROVIDER_URL, BENCH_PROMPT, BENCH_ITERATIONS, catalogToPluginFactories } from './index';
+
+// The dialog/header brand title is the VERSIONED product name —
+// "Bench v<version>" (PRODUCT_TITLE in src/version.ts, version read from
+// this package's package.json). Derive the expected value from the real
+// package.json — the same single source vite.config.ts and vitest.config.ts
+// inject as the `__APP_VERSION__` define — so the assertion cannot drift
+// from the value the shipped bundle renders. `npm test` always runs vitest
+// from the package root (vitest.config.ts is resolved from that cwd), so
+// 'package.json' is cwd-relative; the jsdom test environment rewrites
+// import.meta.url, so a URL-based path would be a non-file scheme (same
+// convention as distribution/chat-assistant's ChatAssistantApp test).
+const EXPECTED_PRODUCT_TITLE = `Bench v${JSON.parse(
+    readFileSync('package.json', 'utf-8')
+).version as string}`;
 
 // ── Fetch stub plumbing ──────────────────────────────────────────────────────
 
@@ -105,8 +120,8 @@ describe('App (dev shell)', () => {
 
         render(<App />);
 
-        // Dialog chrome
-        expect(screen.getByText('Bench')).toBeTruthy();
+        // Dialog chrome — the brand title carries the package version
+        expect(screen.getByText(EXPECTED_PRODUCT_TITLE)).toBeTruthy();
         expect(screen.getByText(/Enter an OpenAI-compatible provider base URL/)).toBeTruthy();
         // Input pre-filled with the LAN provider default (any v1 base works)
         expect(urlInput().value).toBe(DEFAULT_PROVIDER_URL);

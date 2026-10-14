@@ -10,6 +10,7 @@ import React from 'react';
 import { styledComponent } from '@presource/react';
 import { benchTheme, useBenchThemeMode, setBenchThemeMode, type BenchThemeMode } from '../../utilities';
 import { benchDashboardStore, type BenchDashboardStatus } from '../../context';
+import { PRODUCT_TITLE } from '../../../version';
 
 // Tone mapping per lifecycle state: idle = grey, running = amber, done = green
 const STATUS_TONES: Record<BenchDashboardStatus, { dot: string; ink: string; soft: string }> = {
@@ -49,7 +50,8 @@ const BrandMark = styledComponent('div', {
     flexShrink: 0
 });
 
-// "Bench" product name
+// Versioned product name ("Bench v<version>" — PRODUCT_TITLE from
+// src/version.ts, version read from package.json)
 const BrandTitle = styledComponent('span', {
     fontSize: 16,
     fontWeight: 700,
@@ -179,7 +181,7 @@ export const SectionHeader = React.memo(() => {
                 </BrandMark>
                 <BrandTextColumn>
                     <BrandTitle>
-                        {'Bench'}
+                        {PRODUCT_TITLE}
                     </BrandTitle>
                     <BrandTag>
                         {'Model Benchmark'}

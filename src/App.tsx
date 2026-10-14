@@ -33,6 +33,7 @@ import { BenchDashboard, type BenchDashboardStatus } from './index';
 import { type BenchPluginFactory, catalogToPluginFactories, PLUGINS, BENCH_PROMPT } from './index';
 import { styledComponent } from '@presource/react';
 import { benchTheme, useBenchThemeSync } from './index';
+import { PRODUCT_TITLE } from './version';
 
 // Pre-filled provider base URL: the LAN provider service origin + the
 // /providers/private/v1 route prefix (runtime/endpoint/provider/private/
@@ -110,7 +111,7 @@ export const App = () => {
         return (
             <ResolveShell>
                 <ResolveCard>
-                    <ResolveTitle>{'Bench'}</ResolveTitle>
+                    <ResolveTitle>{PRODUCT_TITLE}</ResolveTitle>
                     <ResolveHint>{`Resolving provider catalog at ${urlDraft().trim()} …`}</ResolveHint>
                 </ResolveCard>
             </ResolveShell>
@@ -123,7 +124,7 @@ export const App = () => {
     return (
         <ResolveShell>
             <ResolveCard>
-                <ResolveTitle>{'Bench'}</ResolveTitle>
+                <ResolveTitle>{PRODUCT_TITLE}</ResolveTitle>
                 <ResolveHint>{'Enter an OpenAI-compatible provider base URL (v1) to load the model fleet.'}</ResolveHint>
                 <UrlInput
                     data-testid="provider-url-input"

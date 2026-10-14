@@ -11,8 +11,22 @@ import path from 'node:path';
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
 
+// Application version: read once from this package's package.json and pinned
+// into the bundle as the __APP_VERSION__ define (see src/version.ts) so the
+// header can render "Bench v{version}" without bundling package.json into
+// the client — same convention as the distribution/* apps (e.g. maths,
+// chat-assistant).
+const APP_VERSION = (JSON.parse(
+    fs.readFileSync(new URL('./package.json', import.meta.url), 'utf-8'),
+) as { version: string }).version;
+
 export default defineConfig({
     plugins: [react()],
+    define: {
+        // Compile-time constant — replaced with the literal version string
+        // (e.g. "1.0.2") in both dev and build output.
+        __APP_VERSION__: JSON.stringify(APP_VERSION)
+    },
     resolve: {
         alias: {
             '@config/environment': fs.existsSync(
