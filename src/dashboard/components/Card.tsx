@@ -89,8 +89,9 @@ const CardDivider = styledComponent('div', {
 } as React.CSSProperties);
 
 // Body with standard inner padding (cards that are not full-bleed).
-// The model panel is the only Card consumer now (header-less) — generous
-// padding gives the page its breathing room.
+// The framework bundle ships this surface to plugin factories (the model
+// columns render their own shells) — generous padding gives cards their
+// breathing room.
 const CardBodyPadded = styledComponent('div', {
     flex: 1,
     minHeight: 0,

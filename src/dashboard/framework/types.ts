@@ -15,11 +15,13 @@
 //   factories UNINVOKED; framework/loader.ts invokes them one by one after
 //   the shell renders) and returns a BenchPlugin describing:
 //
-//     - its SIDEBAR LABEL (entries — what the plugin rail shows),
-//     - what happens when that label is CLICKED (its panel renders in the
-//       content area — the model page: run controls + benchmark entries),
-//     - its `createProvider` — the execution binding the panel compiles
-//       into each scenario helper (bench tests execute at request).
+//     - its SIDEBAR LABEL (entries — what the plugin rail shows; clicking
+//       TOGGLES the model's selection),
+//     - its COLUMN (the panel — rendered once per SELECTED model, side by
+//       side: target fields + benchmark entries),
+//     - its `createProvider` — the execution binding the dispatcher (the
+//       framework's Scenario Execution header) compiles into each scenario
+//       helper for every selected plugin (bench tests execute at request).
 //
 //   A plugin module is FULLY self-contained: its runner logic, its spec and
 //   its factory live in one file under dashboard/plugins/, and it may only
@@ -65,8 +67,9 @@ export type ModelBenchSpec = {
     concurrency?: number;
     // OpenAI-compatible base URL this model's completions POST hits — the
     // RESOLVED value (options.baseUrl ?? DEFAULT_PROVIDER_URL at factory
-    // time, dashboard/plugins/model-bench.ts). Autofills the panel's
-    // Endpoint target field when the model activates.
+    // time, dashboard/plugins/model-bench.ts). Autofills the model column's
+    // Endpoint target field and is the dispatch fallback for untouched
+    // columns.
     baseUrl?: string;
     // Build the BenchProvider for this model (injected by the plugin module
     // so tests can stub the transport; production passes createHttpProvider).
@@ -74,8 +77,9 @@ export type ModelBenchSpec = {
 };
 
 // ── Sidebar ───────────────────────────────────────────────────────────────────
-// One selectable entry the dashboard merges into the plugin rail. Selecting an
-// entry activates the owning plugin's panel.
+// One selectable entry the dashboard merges into the plugin rail. Clicking an
+// entry TOGGLES the owning plugin's selection (multi-select — every selected
+// model renders a column and is benchmarked by one New Run).
 export type BenchPluginEntry = {
     // Stable key for this entry (must be unique within the plugin).
     id: string;
@@ -85,10 +89,10 @@ export type BenchPluginEntry = {
     icon?: string;
     // Screen-reader text when the label alone is ambiguous (defaults to label).
     ariaLabel?: string;
-    // TARGET AUTOFILL payload (model-bench entries only): the model id +
-    // endpoint base URL a rail click snaps the panel's editable target
-    // fields to (framework/host.tsx → store applyTarget). Optional —
-    // non-model plugins omit both and rail clicks skip the autofill.
+    // THIS MODEL'S BINDING (model-bench entries only): the model id +
+    // endpoint the column's target fields autofill from and the dispatcher
+    // falls back to for untouched columns (framework/host.tsx + model column
+    // in framework/model-kit.tsx). Optional — non-model plugins omit both.
     model?: string;
     endpoint?: string;
 };
@@ -96,8 +100,8 @@ export type BenchPluginEntry = {
 // ── Runtime context ──────────────────────────────────────────────────────────
 // What every plugin component receives: its OWN entry id plus the shared
 // framework state (plugins read reports/logs/entries from the shared store
-// via useBenchDashboard). The host additionally injects the loaded scenario
-// plugins and the external-runner override — see host.tsx.
+// via useBenchDashboard). The columns host additionally injects the loaded
+// scenario plugins and the external-runner override — see host.tsx.
 export type BenchPluginContext = {
     // The plugin's unique id (registry key).
     pluginId: BenchPluginId;
@@ -105,9 +109,10 @@ export type BenchPluginContext = {
     entryId: string;
     // The plugin's declared rail entries.
     entries: BenchPluginEntry[];
-    // The loaded SCENARIO plugins (dashboard/scenarios/) — the model panel
-    // renders their specs in its dropdown and dispatches their execute().
-    // Optional — absent before the scenario loader has committed anything.
+    // The loaded SCENARIO plugins (dashboard/scenarios/) — the framework's
+    // execution host renders their specs in its dropdown and dispatches
+    // their execute(). Optional — absent before the scenario loader has
+    // committed anything.
     scenarios?: BenchScenarioPlugin[];
     // EXTERNAL RUNNER override: when the dashboard host received an onNewRun
     // prop, Run dispatches there instead of creating in-dash entries.
@@ -135,15 +140,18 @@ export type BenchPlugin = {
     // declares exactly ONE entry — its own rail label.
     entries: BenchPluginEntry[];
     // Rendered into the content band's toolbar card while this plugin is
-    // active. Optional — a plugin without controls renders no toolbar card.
+    // first in the selection. Optional — a plugin without controls renders
+    // no toolbar card.
     toolbar?: BenchPluginToolbarComponent;
-    // Content area while this plugin is active. Required — this IS the
-    // dashboard's rendering contribution.
+    // The plugin's COLUMN — rendered once per SELECTED plugin, side by side
+    // in the columns row (framework/host.tsx BenchPluginColumnsHost).
+    // Required — this IS the dashboard's rendering contribution.
     panel: BenchPluginPanelComponent;
     // Builds the BenchProvider for the plugin's model (model-bench plugins
-    // only). The scenario dispatcher reads this off the ACTIVE rail plugin
-    // so a scenario can be executed against ANY model without the scenario
-    // knowing the transport — the framework compiles it into the helper.
+    // only). The dispatcher (the framework's Scenario Execution header)
+    // reads this off every SELECTED plugin so a scenario can be executed
+    // against ANY selected model without the scenario knowing the
+    // transport — the framework compiles it into the helper.
     createProvider?: () => BenchProvider;
 };
 

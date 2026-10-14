@@ -53,9 +53,9 @@ describe('runBench', () => {
         expect(report.createdAt).toBe('1970-01-01T00:00:00.000Z');
         expect(report.wallTime).toBe(0.4);
         expect(report.runs).toEqual([
-            { index: 0, startTime: 0.04, ttft: 0.04, totalTime: 0.08, promptTokens: 7, completionTokens: 9, totalTokens: 16, contentLength: 9, prefillTokensPerSec: 175, tokensPerSec: 225 },
-            { index: 1, startTime: 0.16, ttft: 0.04, totalTime: 0.08, promptTokens: 7, completionTokens: 9, totalTokens: 16, contentLength: 9, prefillTokensPerSec: 175, tokensPerSec: 225 },
-            { index: 2, startTime: 0.28, ttft: 0.04, totalTime: 0.08, promptTokens: 7, completionTokens: 9, totalTokens: 16, contentLength: 9, prefillTokensPerSec: 175, tokensPerSec: 225 }
+            { index: 0, startTime: 0.04, ttft: 0.04, totalTime: 0.08, promptTokens: 7, completionTokens: 9, totalTokens: 16, contentLength: 9, prefillTokensPerSec: 175, tokensPerSec: 225, content: 'abcd wxyz' },
+            { index: 1, startTime: 0.16, ttft: 0.04, totalTime: 0.08, promptTokens: 7, completionTokens: 9, totalTokens: 16, contentLength: 9, prefillTokensPerSec: 175, tokensPerSec: 225, content: 'abcd wxyz' },
+            { index: 2, startTime: 0.28, ttft: 0.04, totalTime: 0.08, promptTokens: 7, completionTokens: 9, totalTokens: 16, contentLength: 9, prefillTokensPerSec: 175, tokensPerSec: 225, content: 'abcd wxyz' }
         ]);
         expect(report.summary).toEqual({
             model: 'test/model',
@@ -135,8 +135,8 @@ describe('runBench', () => {
 
         expect(report.wallTime).toBe(0.28);
         expect(report.runs).toEqual([
-            { index: 0, startTime: 0.04, ttft: 0.04, totalTime: 0.16, promptTokens: 7, completionTokens: 9, totalTokens: 16, contentLength: 9, prefillTokensPerSec: 175, tokensPerSec: 75 },
-            { index: 1, startTime: 0.12, ttft: 0.04, totalTime: 0.12, promptTokens: 7, completionTokens: 9, totalTokens: 16, contentLength: 9, prefillTokensPerSec: 175, tokensPerSec: 112.50000000000001 }
+            { index: 0, startTime: 0.04, ttft: 0.04, totalTime: 0.16, promptTokens: 7, completionTokens: 9, totalTokens: 16, contentLength: 9, prefillTokensPerSec: 175, tokensPerSec: 75, content: 'abcd wxyz' },
+            { index: 1, startTime: 0.12, ttft: 0.04, totalTime: 0.12, promptTokens: 7, completionTokens: 9, totalTokens: 16, contentLength: 9, prefillTokensPerSec: 175, tokensPerSec: 112.50000000000001, content: 'abcd wxyz' }
         ]);
         expect(report.summary).toEqual({
             model: 'test/model',
@@ -197,19 +197,20 @@ describe('runBench', () => {
             onStream
         });
 
-        // One tick per chunk, exact in-flight readouts:
+        // One tick per chunk, exact in-flight readouts (text = streamed words
+        // so far):
         //   chunk1: 4 chars → 1 est. token, elapsed == ttft → phase 0 → rate 0
         //   chunk2: 12 chars → 3 est. tokens, phase 0.04 → rate 3/0.04 = 75
         expect(onStream).toHaveBeenCalledTimes(2);
-        expect(onStream.mock.calls[0][0]).toEqual({ index: 0, chars: 4, tokens: 1, elapsed: 0.04, tokensPerSec: 0, first: true });
-        expect(onStream.mock.calls[1][0]).toEqual({ index: 0, chars: 12, tokens: 3, elapsed: 0.08, tokensPerSec: 75, first: false });
+        expect(onStream.mock.calls[0][0]).toEqual({ index: 0, chars: 4, tokens: 1, text: 'abcd', elapsed: 0.04, tokensPerSec: 0, first: true });
+        expect(onStream.mock.calls[1][0]).toEqual({ index: 0, chars: 12, tokens: 3, text: 'abcdefghijkl', elapsed: 0.08, tokensPerSec: 75, first: false });
 
         // The final run math is unaffected by the streaming side-channel:
         // prompt 'hello' (5 chars) → 2 est. tokens; content 12 chars → 3
         // completion tokens; prefill = 2/0.04 = 50; phase 0.12 - 0.04 = 0.08
         // → 3/0.08 tok/s (floating-point: 37.50000000000001)
         expect(report.runs).toEqual([
-            { index: 0, startTime: 0.04, ttft: 0.04, totalTime: 0.12, promptTokens: 2, completionTokens: 3, totalTokens: 5, contentLength: 12, prefillTokensPerSec: 50, tokensPerSec: 37.50000000000001 }
+            { index: 0, startTime: 0.04, ttft: 0.04, totalTime: 0.12, promptTokens: 2, completionTokens: 3, totalTokens: 5, contentLength: 12, prefillTokensPerSec: 50, tokensPerSec: 37.50000000000001, content: 'abcdefghijkl' }
         ]);
     });
 

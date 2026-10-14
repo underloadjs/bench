@@ -19,9 +19,7 @@
 // live logs, benchmark entries) flow OUT via the proxy.
 
 import { localContextStore } from '@presource/react';
-// VALUE import (not type-only): DEFAULT_PROVIDER_URL seeds the endpoint
-// target field. No cycle — core never imports the dashboard context.
-import { DEFAULT_PROVIDER_URL, type BenchmarkReport } from '../../core';
+import { type BenchmarkReport } from '../../core';
 
 // Lifecycle of the dashboard from the user's point of view
 export type BenchDashboardStatus = 'idle' | 'running' | 'done';
@@ -57,7 +55,7 @@ export type BenchEntryProgress = {
 // Written by the compiled scenario helper (framework/scenario-kit.tsx) from
 // the engine's onStream ticks (throttled — the engine fires per chunk) and
 // removed the moment the run settles. The entry card renders these as live
-// "N tok received" rows while the bench runs.
+// "N tok received" rows plus the streamed WORDS while the bench runs.
 export type BenchStreamState = {
     // 0-based run index the readout belongs to
     index: number;
@@ -66,6 +64,9 @@ export type BenchStreamState = {
     // Estimated tokens received so far (~chars/4 — the engine's estimation
     // heuristic; provider usage only finalizes counts at settle time)
     tokens: number;
+    // THE STREAMED TEXT SO FAR — the run's live output (reasoning + answer
+    // concatenated), rendered as growing words while the run generates
+    text: string;
     // Seconds since the run started
     elapsed: number;
     // Live sustained rate over the generation phase (post-TTFT), tok/s
@@ -74,6 +75,16 @@ export type BenchStreamState = {
 
 // Lifecycle of ONE benchmark entry
 export type BenchEntryStatus = 'running' | 'done';
+
+// ONE MODEL'S EDITABLE RUN TARGET — the per-column Model + Endpoint pair,
+// keyed by plugin id in the store's `targets` map. Absent = the column is
+// untouched and its runs use the plugin's own binding.
+export type BenchTargetOverride = {
+    // Completion routing key (`model` on chat/completions).
+    model: string;
+    // OpenAI-compatible base URL (v1) the completions POST hits.
+    endpoint: string;
+};
 
 // ONE BENCHMARK ENTRY — created per New Run click. Every click appends a new
 // entry (history accumulates, newest first) and entries execute IN PARALLEL
@@ -118,9 +129,17 @@ export type BenchDashboardContext = {
     status: BenchDashboardStatus;
     // The model whose raw runs are expanded in the timeline panel
     selectedModel: string | null;
-    // The ACTIVE bench plugin (framework/registry.ts reconciles this against
-    // the loaded plugin list — '' = nothing selected, falls back to first)
-    selectedPluginId: string;
+    // The SELECTED bench plugins (framework/registry.ts reconciles this
+    // against the loaded plugin list — multi-select: every selected model
+    // renders as a column and is benchmarked by one New Run). Empty = nothing
+    // selected; the columns area shows its empty state.
+    selectedPluginIds: string[];
+    // Set the first time the operator toggles a rail model. While false, the
+    // registry's default-once fallback may auto-select the first loaded
+    // plugin (a fresh dashboard is immediately runnable); once true, an
+    // explicit deselect-all STICKS (the fallback stands down — the same
+    // forced-re-tick guard as the scenario dropdown's defaultedForRef).
+    modelSelectionTouched: boolean;
     // Display prompt (first report's config prompt, or an explicit override)
     prompt: string;
     // Live console feed (newest LAST — the panel renders in order)
@@ -130,26 +149,24 @@ export type BenchDashboardContext = {
     // each). Empty = nothing ticked yet; the dispatcher falls back to the
     // first scenario.
     selectedScenarioIds: string[];
-    // ── THE BENCHMARK TARGET ────────────────────────────────────────────
-    // The two EDITABLE fields every run executes against. The rail menu is
-    // their AUTOFILL source: activating a model snaps both fields to that
-    // model's binding (applyTarget — rail click in framework/host.tsx +
-    // the panel's activation effect in framework/model-kit.tsx). Both stay
-    // freely editable so models/endpoints OUTSIDE the loaded catalog can
-    // be benchmarked (the provider is rebuilt from these at launch).
+    // ── THE BENCHMARK TARGETS (per selected model) ───────────────────────
+    // Each selected model's column carries TWO EDITABLE fields (model id +
+    // endpoint) that its runs execute against, keyed by plugin id. The
+    // column's fields are their AUTOFILL source-equivalent: untouched columns
+    // write nothing (runs use the plugin's own binding), the first keystroke
+    // records the override so models/endpoints OUTSIDE the loaded catalog can
+    // be benchmarked (the dispatcher rebuilds the provider from these).
     // Model id sent as the completion routing key (`model` on
-    // chat/completions). Empty = fall back to the active plugin's own id.
-    targetModel: string;
-    // OpenAI-compatible base URL (v1) the completions POST hits. Empty =
-    // fall back to the active plugin's own endpoint.
-    targetEndpoint: string;
-    // ── THE RUN PLAN (durable across models) ─────────────────────────────
-    // The iterations/concurrency values pinned in the panel's RunBar. They
-    // live in the SHARED store — not in RunBar-local state — because a rail
-    // switch UNMOUNTS the active model's panel and mounts the next model's
-    // (BenchPluginPanelHost renders a different component per plugin), which
-    // would wipe RunBar-local state. Every model panel's RunBar seeds its
-    // drafts from these, so the operator's plan follows them across models.
+    // chat/completions); blank/absent = fall back to the plugin's own model.
+    targets: Record<string, BenchTargetOverride>;
+    // ── THE RUN PLAN (durable across column changes) ─────────────────────
+    // The iterations/concurrency values pinned in the execution bar's
+    // RunBar. They live in the SHARED store — not in RunBar-local state —
+    // because a rail selection change MOUNTS/UNMOUNTS model columns (the
+    // columns host renders a different component set per selection), which
+    // would wipe RunBar-local state if the RunBar itself were remounted.
+    // Every fresh RunBar seeds its drafts from these, so the operator's
+    // plan survives any selection change.
     // Runs per bench entry (sequential within the entry) — the RunBar's
     // Iterations input.
     planIterations: number;
@@ -158,7 +175,8 @@ export type BenchDashboardContext = {
     planConcurrency: number;
     // Set once the operator types into either plan input: the scenario-spec
     // auto-sync (RunBar) stands down. Persisted so the pin ALSO survives
-    // panel remounts (the local planEditedRef it replaces did not).
+    // column mount/unmount cycles (the local planEditedRef it replaced did
+    // not).
     planPinned: boolean;
     // Invoked when a comparison-row is clicked (default: local store update)
     onSelectModel: (model: string) => void;
@@ -218,19 +236,19 @@ export const {
     entries: [],
     status: 'idle',
     selectedModel: null,
-    selectedPluginId: '',
+    selectedPluginIds: [],
+    modelSelectionTouched: false,
     prompt: '',
     logs: [],
     selectedScenarioIds: [],
     planIterations: DEFAULT_PLAN_ITERATIONS,
     planConcurrency: DEFAULT_PLAN_CONCURRENCY,
     planPinned: false,
-    // Target fields: blank model (falls back to the active plugin's id) +
-    // the standard LAN provider endpoint. Panels autofill both on
-    // activation (framework/model-kit.tsx) and rail clicks re-apply
-    // (framework/host.tsx) — these are just the pre-activation defaults.
-    targetModel: '',
-    targetEndpoint: DEFAULT_PROVIDER_URL,
+    // Per-model target overrides: blank by default — untouched columns run
+    // against their plugin's own binding. Columns record an override on the
+    // first keystroke (framework/model-kit.tsx write-through) and the
+    // dispatcher rebuilds the provider from it (framework/host.tsx).
+    targets: {},
     // External observation hooks — safe no-ops by default. (They must stay
     // no-op here: callbacks run outside component render, so they cannot call
     // benchDashboardStore() themselves — the store hook is render-only.)
@@ -269,15 +287,15 @@ export const useBenchDashboard = () => {
         entries: bench.entries,
         status: bench.status,
         selectedModel: bench.selectedModel,
-        selectedPluginId: bench.selectedPluginId,
+        selectedPluginIds: bench.selectedPluginIds,
+        modelSelectionTouched: bench.modelSelectionTouched,
         prompt: bench.prompt,
         logs: bench.logs,
         selectedScenarioIds: bench.selectedScenarioIds,
         planIterations: bench.planIterations,
         planConcurrency: bench.planConcurrency,
         planPinned: bench.planPinned,
-        targetModel: bench.targetModel,
-        targetEndpoint: bench.targetEndpoint,
+        targets: bench.targets,
         // ── Actions ─────────────────────────────────────────────────
         /** Registers a finished benchmark report into the dashboard. */
         addReport: (report: BenchmarkReport) => {
@@ -337,9 +355,24 @@ export const useBenchDashboard = () => {
         selectModel: (model: string) => {
             bench.selectedModel = model;
         },
-        /** Activates a bench plugin (framework rail clicks / registry fallback). */
-        selectPlugin: (pluginId: string) => {
-            bench.selectedPluginId = pluginId;
+        /**
+         * TOGGLES a bench plugin's selection (framework rail clicks —
+         * MULTI-SELECT): a selected model becomes deselected and vice versa.
+         * Marks the selection as operator-touched so the registry's
+         * default-once fallback stands down afterwards (a deselect-all
+         * sticks). Toggling the LAST selected model off is allowed — the
+         * columns area shows its empty state.
+         */
+        togglePlugin: (pluginId: string) => {
+            const has = bench.selectedPluginIds.includes(pluginId);
+            bench.selectedPluginIds = has
+                ? bench.selectedPluginIds.filter((id) => id !== pluginId)
+                : [...bench.selectedPluginIds, pluginId];
+            bench.modelSelectionTouched = true;
+        },
+        /** Replaces the plugin selection (registry default/prune writes — not operator toggles). */
+        selectPlugins: (pluginIds: string[]) => {
+            bench.selectedPluginIds = [...pluginIds];
         },
         /** Ticks/unticks a scenario in the panel dropdown (multi-select). */
         toggleScenario: (scenarioId: string) => {
@@ -377,23 +410,17 @@ export const useBenchDashboard = () => {
         pinPlan: () => {
             bench.planPinned = true;
         },
-        /** Sets the model id the next runs execute against (panel Model field). */
-        setTargetModel: (model: string) => {
-            bench.targetModel = model;
-        },
-        /** Sets the endpoint base URL the next runs execute against (panel Endpoint field). */
-        setTargetEndpoint: (endpoint: string) => {
-            bench.targetEndpoint = endpoint;
-        },
         /**
-         * AUTOFILL: snaps BOTH target fields at once — the rail menu's
-         * whole purpose. Called from the rail click handler
-         * (framework/host.tsx) and the panel's activation effect
-         * (framework/model-kit.tsx) with the model's own binding.
+         * Records ONE column's editable run target (model id + endpoint),
+         * keyed by plugin id. The column's fields write through on every
+         * keystroke (framework/model-kit.tsx); the dispatcher reads the
+         * override back when it builds that column's provider
+         * (framework/host.tsx) — models/endpoints OUTSIDE the loaded catalog
+         * are benchmarkable this way. The whole map is REPLACED (not nested
+         * mutated) so the store proxy's top-level set fires the refresh.
          */
-        applyTarget: (model: string, endpoint: string) => {
-            bench.targetModel = model;
-            bench.targetEndpoint = endpoint;
+        setTarget: (pluginId: string, model: string, endpoint: string) => {
+            bench.targets = { ...bench.targets, [pluginId]: { model, endpoint } };
         },
         /** Clears reports, entries, logs and selection back to the idle state. */
         reset: () => {
@@ -401,13 +428,13 @@ export const useBenchDashboard = () => {
             bench.entries = [];
             bench.logs = [];
             bench.selectedModel = null;
-            bench.selectedPluginId = '';
+            bench.selectedPluginIds = [];
+            bench.modelSelectionTouched = false;
             bench.selectedScenarioIds = [];
             bench.planIterations = DEFAULT_PLAN_ITERATIONS;
             bench.planConcurrency = DEFAULT_PLAN_CONCURRENCY;
             bench.planPinned = false;
-            bench.targetModel = '';
-            bench.targetEndpoint = DEFAULT_PROVIDER_URL;
+            bench.targets = {};
             bench.status = 'idle';
         }
     };

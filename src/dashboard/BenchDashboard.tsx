@@ -6,44 +6,45 @@
 // from the framework:
 //
 //   MODEL plugins    dashboard/plugins/    → the rail (one entry per model)
-//   SCENARIO plugins dashboard/scenarios/  → the model panel's dropdown (one
-//                                           entry per benchmark scenario;
-//                                           several can be ticked and
-//                                           benchmarked TOGETHER)
+//   SCENARIO plugins dashboard/scenarios/  → the execution header's dropdown
+//                                           (one entry per benchmark
+//                                           scenario; several can be ticked
+//                                           and benchmarked TOGETHER)
 //
 //   plugins/index.ts      → the ordered list of UNINVOKED model factories
 //   scenarios/index.ts    → the ordered list of UNINVOKED scenario factories
 //   framework/loader      → loads both families one by one after the shell
 //                           renders
-//   framework/registry    → reconciles the ACTIVE model selection
-//   framework/host        → mounts rail entries + the panel slot (injecting
-//                           the loaded scenarios + external runner override
-//                           into the panel's context)
+//   framework/registry    → reconciles the model selection (multi-select)
+//   framework/host        → mounts rail entries (toggle-select), the
+//                           Scenario Execution header (run controls +
+//                           multi-model dispatch) and the model columns
 //   framework/types       → the plugin + scenario contracts
 //   framework/scenario-kit→ compiles helpers + launches benchmark entries
 //
-// THE RUN FLOW: the run controls (scenario dropdown + plan selects + New
-// Run) live INSIDE the active model's panel, directly under the model name.
-// Each click creates a NEW benchmark entry per ticked scenario (store
-// addEntry) and launches them IN PARALLEL — every entry updates
-// progressively (per-run progress + partial reports) via its compiled
-// helper (framework/scenario-kit.ts).
+// THE RUN FLOW: execution is SEPARATED from the models. The run controls
+// (scenario dropdown + plan selects + New Run) live ONCE in the framework's
+// "Scenario Execution" header, directly above the model columns. Each click
+// fans out across EVERY selected model (the rail is MULTI-SELECT — one
+// column each) × every ticked scenario (one entry each) and launches them IN
+// PARALLEL — every entry updates progressively (per-run progress + partial
+// reports) via its compiled helper (framework/scenario-kit.ts).
 //
 // Visual layout (clean, card-based — design tokens in
-// dashboard/utilities/theme.ts). Models are benchmarked INDIVIDUALLY, so
-// there is deliberately NO cross-model comparison surface (the former fleet
-// stats strip was removed):
+// dashboard/utilities/theme.ts):
 //
 // ┌────────────────────────────────────────────────────────────────────────┐
 // │ B  Bench / MODEL BENCHMARK                        [theme] [● IDLE]     │
 // ├────────────────────────────────────────────────────────────────────────┤
 // │ ┌──────────────┐ ┌──────────────────────────────────────────────────┐  │
-// │ │ PLUGIN RAIL   │ │ <model name>                     [model panel] │  │
-// │ │ (models)      │ │ [scenario ▾][iters ▾][conc ▾][New Run]        │  │
-// │ │               │ │ <description + prompt>                        │  │
-// │ │               │ │ ───────────────────────────────────────       │  │
-// │ │               │ │ <benchmark entry — newest first>              │  │
-// │ │               │ │ <benchmark entry>                             │  │
+// │ │ BENCH TESTS  │ │ SCENARIO EXECUTION   [scenario ▾][iters][conc]│  │
+// │ │ (multi-      │ │                     [New Run]                 │  │
+// │ │  select      │ │ <ticked scenario description + prompt>        │  │
+// │ │  models)     │ │ ───────────────────────────────────────       │  │
+// │ │              │ │ ┌────────────┬────────────┬────────────┐      │  │
+// │ │              │ │ │ Model 1    │ Model 2    │ Model 3    │      │  │
+// │ │              │ │ │ <entries>  │ <entries>  │ <entries>  │      │  │
+// │ │              │ │ └────────────┴────────────┴────────────┘      │  │
 // │ └──────────────┘ └──────────────────────────────────────────────────┘  │
 // ├────────────────────────────────────────────────────────────────────────┤
 // │ PROMPT  "Write me…"      2 running · 3 models · 18/19 runs · done     │
@@ -61,7 +62,8 @@ import {
     useBenchPluginLoader,
     useBenchPluginRegistry,
     BenchPluginRailHost,
-    BenchPluginPanelHost,
+    BenchScenarioExecutionHost,
+    BenchPluginColumnsHost,
     type BenchPluginFactory,
     type BenchScenarioFactory
 } from './framework';
@@ -82,10 +84,10 @@ const DashboardShell = styledComponent('div', {
     fontFamily: benchTheme.sansFont
 });
 
-// The main content band: rail | model panel (the former right column —
-// leaderboard / timeline / console — and the fleet stats strip were removed;
-// models are benchmarked individually, entries live in the model panel).
-// Generous padding keeps the content card clear of the header/rail/footer.
+// The main content band: rail | execution + model columns (the former right
+// column — leaderboard / timeline / console — and the fleet stats strip were
+// removed). Generous padding keeps the content card clear of the
+// header/rail/footer.
 const MainBand = styledComponent('main', {
     flex: 1,
     minHeight: 0,
@@ -96,7 +98,8 @@ const MainBand = styledComponent('main', {
     overflow: 'hidden'
 });
 
-// Plugin rail column: the model list (grows as plugins load one by one)
+// Plugin rail column: the model list (multi-select; grows as plugins load
+// one by one)
 const RailColumn = styledComponent('div', {
     flex: '0 0 220px',
     display: 'flex',
@@ -106,7 +109,8 @@ const RailColumn = styledComponent('div', {
     overflowY: 'auto'
 });
 
-// Center column: the ACTIVE model's panel (scrollable)
+// Right column: the Scenario Execution header (run controls + dispatch) and
+// the model columns row, stacked and scrollable
 const PluginColumn = styledComponent('div', {
     flex: '1 1 0',
     minWidth: 0,
@@ -129,8 +133,8 @@ export type BenchDashboardProps = {
     status?: BenchDashboardStatus;
     // Display prompt override; defaults to the first report's configured prompt
     prompt?: string;
-    // External runner override — when set, the panel's New Run dispatches
-    // here instead of creating in-dash benchmark entries
+    // External runner override — when set, the Scenario Execution header's
+    // New Run dispatches here instead of creating in-dash benchmark entries
     onNewRun?: () => void;
     // The UNINVOKED MODEL plugin factories this instance loads (the bench
     // fleet). Defaults to the offline fallback fleet in dashboard/plugins
@@ -139,16 +143,16 @@ export type BenchDashboardProps = {
     // prop change reloads the fleet, but identity-stable lists are expected
     // (memoized callers).
     pluginFactories?: BenchPluginFactory[];
-    // The UNINVOKED SCENARIO plugin factories this instance loads (the model
-    // panel's dropdown). Defaults to the offline default set in
+    // The UNINVOKED SCENARIO plugin factories this instance loads (the
+    // execution header's dropdown). Defaults to the offline default set in
     // dashboard/scenarios (SCENARIOS) — standalone, removable, swappable.
     scenarioFactories?: BenchScenarioFactory[];
 };
 
 /**
  * The @agentic/bench dashboard: a plugin-framework host rendering a fleet of
- * model plugins, each with its own scenario dropdown, run controls and
- * parallel benchmark entries.
+ * model plugins — multi-select on the rail, one shared Scenario Execution
+ * header, and one column per selected model benchmarked by each New Run.
  */
 export const BenchDashboard = React.memo((props: BenchDashboardProps) => {
     const { reports, entries, logs, status, prompt, onNewRun, pluginFactories, scenarioFactories } = props;
@@ -213,36 +217,42 @@ function BenchDashboardBody({
     const { plugins: loadedPlugins, done: pluginsDone } = useBenchPluginLoader(fleet, BENCH_FRAMEWORK);
 
     // The scenario family loads through the SAME progressive mechanism —
-    // its own loader instance feeding the model panels' dropdowns (injected
-    // into each panel's context by the panel host below).
+    // its own loader instance feeding the execution header's dropdown (and
+    // the columns' context, injected by the hosts below).
     const { plugins: loadedScenarios } = useBenchPluginLoader(scenarioSet, BENCH_FRAMEWORK);
 
-    // Registry hook: reconciles the ACTIVE MODEL selection (falling back to
-    // the first registered plugin when the selection is stale or empty) and
-    // hands back the ordered plugin list.
+    // Registry hook: reconciles the model selection (multi-select; default-
+    // once fallback to the first registered plugin while the operator has
+    // not toggled anything) and hands back the ordered plugin list.
     const { plugins } = useBenchPluginRegistry(loadedPlugins);
 
     return (
         <>
             {/* Top app bar: brand, lifecycle pill, theme control (run
-                controls live inside the model panel, under the model name) */}
+                controls live in the Scenario Execution header) */}
             <SectionHeader />
 
-            {/* Main split: model rail | active model's panel (run controls +
-                description + parallel benchmark entries) */}
+            {/* Main split: model rail (multi-select) | execution header +
+                model columns (run controls + dispatch + parallel benchmark
+                entries, one column per selected model) */}
             <MainBand>
                 <RailColumn>
                     {/* Every loaded model plugin's entries in registration
-                        order; the rail grows as each plugin lands. */}
+                        order; the rail grows as each plugin lands. Clicks
+                        TOGGLE a model's selection (multi-select). */}
                     <BenchPluginRailHost plugins={plugins} />
                 </RailColumn>
 
                 <PluginColumn>
-                    {/* Content area: the ACTIVE model's panel slot — this IS
-                        the plugin's rendering contribution. The host injects
-                        the loaded scenarios + the external runner override
-                        into the panel's context. */}
-                    <BenchPluginPanelHost plugins={plugins} scenarios={loadedScenarios} onRun={onNewRun} />
+                    {/* Execution header: the scenario dropdown + plan
+                        selects + New Run, SEPARATED from the models. One
+                        click dispatches across every selected model ×
+                        ticked scenario × concurrency lane. */}
+                    <BenchScenarioExecutionHost plugins={plugins} scenarios={loadedScenarios} onRun={onNewRun} />
+                    {/* Content area: one column per SELECTED model — this IS
+                        each plugin's rendering contribution. Adding models
+                        adds columns; the row squishes rather than wraps. */}
+                    <BenchPluginColumnsHost plugins={plugins} scenarios={loadedScenarios} onRun={onNewRun} />
                     {/* Progressive loading hint while factories are pending. */}
                     {!pluginsDone ? <RailLoadingHint>{'Loading bench tests…'}</RailLoadingHint> : null}
                 </PluginColumn>
@@ -254,7 +264,7 @@ function BenchDashboardBody({
     );
 }
 
-// Progressive-load hint: shown under the active panel while the remaining
+// Progressive-load hint: shown under the model columns while the remaining
 // plugin factories are still being loaded one by one (framework/loader.ts).
 const RailLoadingHint = styledComponent('span', {
     fontSize: 11,

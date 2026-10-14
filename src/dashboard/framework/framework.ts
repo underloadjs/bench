@@ -40,7 +40,7 @@ export type { ModelBenchSpec } from './types';
 
 export type BenchFramework = {
     // The framework's standard bench recipe: builds a complete per-model
-    // plugin (rail entry + toolbar + panel) from a spec.
+    // plugin (rail entry + toolbar + column) from a spec.
     createModelBench: (spec: ModelBenchSpec) => BenchPlugin;
     // The framework's standard scenario recipe: builds a complete scenario
     // plugin (dropdown entry + default execute) from a spec. Scenario

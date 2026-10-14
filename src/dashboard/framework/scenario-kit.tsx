@@ -218,6 +218,7 @@ export function compileScenarioHelper(input: BenchScenarioHelperInput): BenchSce
                         index: tick.index,
                         chars: tick.chars,
                         tokens: tick.tokens,
+                        text: tick.text,
                         elapsed: tick.elapsed,
                         tokensPerSec: tick.tokensPerSec
                     },

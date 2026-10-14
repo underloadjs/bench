@@ -236,8 +236,8 @@ describe('tool-calling scenarios', () => {
         expect(entry.report?.config).toEqual({ prompt: WEATHER_PROMPT, iterations: 2, concurrency: 1 });
         // Both runs measured against the stub — prefill 2/1 = 2, decode 4/1 = 4
         expect(entry.report?.runs).toEqual([
-            { index: 0, startTime: 1, ttft: 1, totalTime: 2, promptTokens: 2, completionTokens: 4, totalTokens: 6, contentLength: 4, prefillTokensPerSec: 2, tokensPerSec: 4 },
-            { index: 1, startTime: 4, ttft: 1, totalTime: 2, promptTokens: 2, completionTokens: 4, totalTokens: 6, contentLength: 4, prefillTokensPerSec: 2, tokensPerSec: 4 }
+            { index: 0, startTime: 1, ttft: 1, totalTime: 2, promptTokens: 2, completionTokens: 4, totalTokens: 6, contentLength: 4, prefillTokensPerSec: 2, tokensPerSec: 4, content: 'abcd' },
+            { index: 1, startTime: 4, ttft: 1, totalTime: 2, promptTokens: 2, completionTokens: 4, totalTokens: 6, contentLength: 4, prefillTokensPerSec: 2, tokensPerSec: 4, content: 'abcd' }
         ]);
     });
 
@@ -288,9 +288,9 @@ describe('compileScenarioHelper', () => {
         expect(report.createdAt).toBe('2026-01-01T00:00:00.000Z');
         expect(report.wallTime).toBe(10);
         expect(report.runs).toEqual([
-            { index: 0, startTime: 1, ttft: 1, totalTime: 2, promptTokens: 2, completionTokens: 4, totalTokens: 6, contentLength: 4, prefillTokensPerSec: 2, tokensPerSec: 4 },
-            { index: 1, startTime: 4, ttft: 1, totalTime: 2, promptTokens: 2, completionTokens: 4, totalTokens: 6, contentLength: 4, prefillTokensPerSec: 2, tokensPerSec: 4 },
-            { index: 2, startTime: 7, ttft: 1, totalTime: 2, promptTokens: 2, completionTokens: 4, totalTokens: 6, contentLength: 4, prefillTokensPerSec: 2, tokensPerSec: 4 }
+            { index: 0, startTime: 1, ttft: 1, totalTime: 2, promptTokens: 2, completionTokens: 4, totalTokens: 6, contentLength: 4, prefillTokensPerSec: 2, tokensPerSec: 4, content: 'abcd' },
+            { index: 1, startTime: 4, ttft: 1, totalTime: 2, promptTokens: 2, completionTokens: 4, totalTokens: 6, contentLength: 4, prefillTokensPerSec: 2, tokensPerSec: 4, content: 'abcd' },
+            { index: 2, startTime: 7, ttft: 1, totalTime: 2, promptTokens: 2, completionTokens: 4, totalTokens: 6, contentLength: 4, prefillTokensPerSec: 2, tokensPerSec: 4, content: 'abcd' }
         ]);
         expect(report.summary).toEqual({
             model: 'mock-model',
@@ -439,15 +439,15 @@ describe('compileScenarioHelper', () => {
 
         await helper.run();
 
-        // EXACT streaming patch sequence:
+        // EXACT streaming patch sequence (text = the streamed words so far):
         //   1. the run's reset (empty strip)
         //   2. chunk1's forced first-tick push (the row appears without delay)
         //   3. chunk2's push (fake clock advances 1000ms ≥ the 150ms throttle)
         //   4. the settle clear (onRun retires the run's readout)
         expect(streamPatches).toEqual([
             [],
-            [{ index: 0, chars: 4, tokens: 1, elapsed: 1, tokensPerSec: 0 }],
-            [{ index: 0, chars: 12, tokens: 3, elapsed: 2, tokensPerSec: 3 }],
+            [{ index: 0, chars: 4, tokens: 1, text: 'abcd', elapsed: 1, tokensPerSec: 0 }],
+            [{ index: 0, chars: 12, tokens: 3, text: 'abcdefghijkl', elapsed: 2, tokensPerSec: 3 }],
             []
         ]);
         // The entry settles with the streaming strip fully cleared

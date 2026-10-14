@@ -102,6 +102,14 @@ export type BenchRun = {
     totalTokens: number;
     // Character length of the generated content (0 for failed runs)
     contentLength: number;
+    // The COMPLETE generated output of this run — the full answer text, kept
+    // on the record so a UI can show it on demand (per-run "view output"
+    // dialog). Optional: fixture/legacy reports may omit it; failed runs
+    // carry none.
+    content?: string;
+    // The run's chain-of-thought, when the model streamed one (see
+    // BenchGeneration.reasoning) — part of the complete output. Optional.
+    reasoning?: string;
     // PREFILL speed (the INPUT metric): promptTokens / ttft — how many
     // context tokens per second the engine chewed through before the first
     // output token. 0 when the run never streamed (ttft 0) or failed. This
@@ -142,6 +150,10 @@ export type BenchStreamTick = {
     // Estimated tokens received so far (~chars/4 — the engine's estimation
     // heuristic; provider usage only finalizes the counts at settle time)
     tokens: number;
+    // THE STREAMED TEXT SO FAR: the full output this run has streamed
+    // (accumulated across chunks — what a UI can render as live "words
+    // appearing" feedback while the run is still generating)
+    text: string;
     // Seconds since THIS run started
     elapsed: number;
     // Live sustained rate over the generation phase (elapsed - ttft), in

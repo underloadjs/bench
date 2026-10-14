@@ -140,9 +140,17 @@ const settledReport = demoReport(qwenRuns.slice(0, 3), 27.41, '2026-08-20T09:12:
 const runningReport = demoReport(qwenRuns.slice(0, 2), 0, '2026-08-20T09:20:00.000Z', 3);
 
 // Live in-flight readout for the third run — what the engine's onStream
-// ticks report mid-generation (output received so far, decode-phase rate)
+// ticks report mid-generation (output received so far, decode-phase rate,
+// and the streamed words so far)
 const runningStreams: BenchEntry['streaming'] = [
-    { index: 2, chars: 4812, tokens: 1203, elapsed: 26.4, tokensPerSec: 45.6 }
+    {
+        index: 2,
+        chars: 4812,
+        tokens: 1203,
+        text: 'The keeper climbed the spiral stair with the lamp trimmed and burning, the sea pressing close against the rock below. Each night the same ritual, and each night the light answered the fog…',
+        elapsed: 26.4,
+        tokensPerSec: 45.6
+    }
 ];
 
 /** Fixture benchmark entries for the stories (newest first, store order). */

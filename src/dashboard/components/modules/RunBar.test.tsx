@@ -236,7 +236,8 @@ describe('RunBar', () => {
     //
     // Test harness: a host holding the "active model" in state and keying
     // the RunBar by it. Keying forces a full unmount/remount of the RunBar
-    // (exactly what BenchPluginPanelHost does across models) while the
+    // (exactly what the columns host does across selection changes: model
+    // columns mount and unmount) while the
     // provider — and with it the store — stays mounted. NOTE: the host must
     // own the switch state (not a rerender from the test): a plain rerender
     // would give the provider new children identity and re-create the whole

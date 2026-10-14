@@ -5,264 +5,147 @@
 // calls with the BenchFramework it receives from the dashboard (mirrors
 // distribution/maths/src/framework/worksheet-kit.tsx).
 //
-// THE PANEL IS THE MODEL PAGE — everything for one model lives in ONE card:
+// THE PANEL IS THE MODEL COLUMN — execution lives in the framework's
+// "Scenario Execution" header (framework/host.tsx
+// BenchScenarioExecutionHost); every SELECTED model renders as ONE COLUMN
+// side by side (framework/host.tsx BenchPluginColumnsHost), so several
+// models are benchmarked in one go:
 //
-//   <model name>
-//   [scenario ▾] [iterations ▾] [concurrency ▾] [New Run]   ← run controls
-//   <scenario description + prompt>                         ← description
-//   ────────────────────────────────────────────────
-//   <benchmark entry — newest first>                        ← run history
+//   <model name>                              ← column title
+//   [Model ____]                              ← editable target fields
+//   [Endpoint ____]
+//   ────────────────────────────────
+//   <benchmark entry — newest first>          ← run history
 //   <benchmark entry>
 //
-// Each New Run click creates NEW benchmark entries (framework/scenario-kit.ts
-// launchScenario) — one per ticked scenario PER CONCURRENCY LANE — and entries
-// run IN PARALLEL with each other: the Concurrency select fans out into that
-// many side-by-side bench cards (lanes), the Iterations select sets the runs
-// each lane executes sequentially. Every entry updates progressively
-// (progress counter + partial report per settled run).
+// Each New Run click (the execution header) creates NEW benchmark entries
+// (framework/scenario-kit.ts launchScenario) — one per ticked scenario PER
+// SELECTED MODEL PER CONCURRENCY LANE — and entries run IN PARALLEL with
+// each other: the Concurrency select fans each model out into that many
+// side-by-side bench cards (lanes), the Iterations select sets the runs each
+// lane executes sequentially. Every entry updates progressively (progress
+// counter + partial report per settled run).
 //
-// Models are benchmarked INDIVIDUALLY — there is deliberately no cross-model
-// comparison surface (the old fleet stats strip was removed). The plugin's
-// execution contribution is `createProvider`: the panel builds the provider
-// and the framework compiles it into each scenario's helper.
+// The plugin's execution contribution is `createProvider`: the dispatcher
+// (framework/host.tsx) compiles it into each scenario helper for every
+// selected plugin — unless the operator edited the column's target fields,
+// in which case a live HTTP provider is built from the typed values.
 //
 // STATE: the plugin keeps NO state of its own. Entries live in the SHARED
 // framework store (dashboard/context/store.ts addEntry/updateEntry); the
 // compiled scenario helper writes progress + reports into its entry, so the
-// panel re-renders live with zero plugin-framework coupling.
+// column re-renders live with zero plugin-framework coupling. The column's
+// only local state is its two target-field drafts (local typing buffer)
+// written through to the store per keystroke (store targets — durable across
+// column unmount/remount).
 import React from 'react';
 import { styledComponent } from '@presource/react';
-import { createHttpProvider, DEFAULT_PROVIDER_URL } from '../../core';
+import { DEFAULT_PROVIDER_URL } from '../../core';
 import {
     defineBenchPlugin,
     type BenchPlugin,
     type BenchPluginContext,
-    type BenchScenarioPlugin,
     type ModelBenchSpec
 } from './types';
-import type { BenchScenarioSpec } from './types';
-import { launchScenario } from './scenario-kit';
 import { useBenchDashboard, type BenchEntry } from '../context';
-import { benchTheme, formatCount, formatPercent, formatSeconds, formatTokensPerSec } from '../utilities';
-import { Card, RunBar } from '../components';
+import { benchTheme, formatCount, formatSeconds, formatTokensPerSec } from '../utilities';
 
-// ── Panel surface (the content area) ─────────────────────────────────────────
-// The model page: run controls under the model name, the ticked scenario's
-// description + prompt beneath, then the accumulated benchmark entries
-// (newest first, parallel, progressively updated).
-const createPanel = (spec: ModelBenchSpec) => {
-    const ModelBenchPanel = ({ context }: { context: BenchPluginContext }) => {
-        // Live shared store — every entry write re-renders this panel
+// ── Column surface (one selected model) ──────────────────────────────────────
+// The model column: editable target fields under the model name, then the
+// accumulated benchmark entries (newest first, parallel, progressively
+// updated). Column flex semantics live HERE (the column is the flex item of
+// the columns row — framework/host.tsx ColumnsRow): every column shares the
+// row's width equally and squishes (min-width: 0) as more models are added.
+const createColumn = (spec: ModelBenchSpec) => {
+    const ModelBenchColumn = ({ context }: { context: BenchPluginContext }) => {
+        // Live shared store — every entry write re-renders this column
         const bench = useBenchDashboard();
-        // THIS model's benchmark entries (the panel is the model page)
+        // THIS model's benchmark entries (the column is the model page)
         const entries = bench.entries.filter((entry) => entry.model === spec.id);
-        // Loaded scenario plugins from the host-injected context
-        const scenarios: BenchScenarioPlugin[] = context.scenarios ?? [];
-        const scenarioSpecs: BenchScenarioSpec[] = scenarios.map((scenario) => scenario.spec);
-
-        // The ticked scenarios (fallback: the first loaded one) — one entry
-        // each per Run click, all launched in parallel
-        const ticked = scenarios.filter((scenario) => bench.selectedScenarioIds.includes(scenario.id));
-        const queue = ticked.length > 0 ? ticked : scenarios.slice(0, 1);
-        // The description line shows the primary scenario's description+prompt
-        const primary = queue[0];
 
         // ── THE BENCHMARK TARGET ────────────────────────────────────────
-        // The two EDITABLE fields every New Run executes against. The rail
-        // menu is their autofill source (activation snaps them to THIS
-        // model's binding below), but both stay freely editable so models
-        // and endpoints OUTSIDE the loaded catalog can be benchmarked.
-        // RESOLVED endpoint of this panel's own model (spec.baseUrl is
-        // pre-resolved at factory time — dashboard/plugins/model-bench.ts).
+        // The two EDITABLE fields this column's runs execute against. They
+        // autofill from THIS model's own binding (spec.id + the RESOLVED
+        // spec.baseUrl — dashboard/plugins/model-bench.ts) and stay freely
+        // editable so models and endpoints OUTSIDE the loaded catalog can
+        // be benchmarked. Drafts are the typing buffer; every keystroke
+        // WRITES THROUGH to the store's per-plugin target override
+        // (store.ts setTarget) — the dispatcher reads the override back
+        // (framework/host.tsx), and the store value is durable across
+        // column unmount/remount (deselect + reselect).
         const specEndpoint = spec.baseUrl ?? DEFAULT_PROVIDER_URL;
-        // LOCAL DRAFTS: the inputs are controlled by local state, NOT the
-        // store. Reason (localContextStore internals,
-        // presource/react/src/context/local.tsx:61-65): store writes trigger
-        // a DEFERRED setTimeout refresh, so a store-backed input would be
-        // clobbered mid-typing by any other store write re-rendering the
-        // panel (e.g. live entry updates while a bench runs). Drafts
-        // initialize from THIS panel's own binding and write through on
-        // every keystroke so handleRun + tests can read the target from
-        // the store too.
-        const [modelDraft, setModelDraft] = React.useState(spec.id);
-        const [endpointDraft, setEndpointDraft] = React.useState(specEndpoint);
-
-        // ACTIVATION AUTOFILL — "clicking on the left updates the two
-        // fields": whenever THIS panel's model becomes active (mount after
-        // a rail switch, or the registry's first-plugin fallback) both
-        // target fields snap to the model's own binding.
-        React.useEffect(() => {
-            bench.applyTarget(spec.id, specEndpoint);
-            setModelDraft(spec.id);
-            setEndpointDraft(specEndpoint);
-            // eslint-disable-next-line react-hooks/exhaustive-deps -- re-sync only when THIS panel's model changes
-        }, [spec.id]);
-
-        // EXTERNAL AUTOFILL SYNC: a rail (re)click of an ALREADY-active
-        // model re-applies the binding through the store (framework/host.tsx)
-        // without remounting this panel — mirror it into the drafts so the
-        // visible fields follow the rail like they do on activation. User
-        // keystrokes also land here (write-through) — resetting a draft to
-        // the value it already holds is a no-op re-render.
-        React.useEffect(() => {
-            if (bench.targetModel) setModelDraft(bench.targetModel);
-            if (bench.targetEndpoint) setEndpointDraft(bench.targetEndpoint);
-        }, [bench.targetModel, bench.targetEndpoint]);
-
-        // THE DISPATCH — the concurrency setting FANS OUT into PARALLEL BENCH
-        // ENTRIES (lanes). This is the operator-visible meaning of the
-        // Concurrency select: concurrency 3 + New Run → THREE benchmark
-        // entries appear on the panel and generate SIMULTANEOUSLY (the
-        // reported bug: the old dispatch created ONE entry and applied the
-        // concurrency inside it, so with iterations 1 only a single bench —
-        // a single run — ever showed up).
-        //
-        // Semantics (load-test style, mirrors k6 vus × iterations):
-        //   iterations  = runs per bench entry (sequential within the entry)
-        //   concurrency = how many bench entries generate side-by-side
-        // Total requests = iterations × concurrency. Each lane gets its OWN
-        // provider instance + its OWN cancel control (the entry card's
-        // CANCEL button aborts just that lane), and carries a lane tag in
-        // its caption so the parallel benches tell each other apart.
-        const handleRun = (plan: { iterations: number; concurrency: number }) => {
-            // External runner integration wins (the host's onNewRun prop)
-            if (context.onRun) {
-                context.onRun();
-                return;
-            }
-            if (queue.length === 0) {
-                bench.pushLog('no benchmark scenarios installed', 'error');
-                return;
-            }
-            if (!spec.createProvider) {
-                bench.pushLog(`model ${spec.label ?? spec.id} has no provider binding`, 'error');
-                return;
-            }
-            // Sanitized lane count (the RunBar clamps already; the engine
-            // re-sanitizes per entry too — belt and braces)
-            const lanes = Math.max(1, Math.floor(plan.concurrency) || 1);
-            // THE TARGET: the two editable fields (autofilled by the rail,
-            // editable to test anything outside the catalog). Blank falls
-            // back to this panel's own binding.
-            const targetModel = modelDraft.trim() || spec.id;
-            const targetEndpoint = endpointDraft.trim() || specEndpoint;
-            // UNTOUCHED autofill (both fields still equal the plugin's own
-            // binding) → the spec's own provider factory — the demo/stub
-            // transport injection (dashboard/plugins/index.ts demoFleets,
-            // stories/tests) keeps working. Any edit → a live HTTP provider
-            // built from the typed model id + endpoint (core/provider.ts).
-            const untouched = targetModel === spec.id && targetEndpoint === specEndpoint;
-            const buildProvider = untouched
-                ? spec.createProvider
-                : () => createHttpProvider(targetModel, { baseUrl: targetEndpoint });
-            // Parallel launch: every ticked scenario × every lane gets its
-            // OWN entry + provider instance, none awaiting another. Within a
-            // lane the iterations run sequentially (per-entry concurrency 1)
-            // so lanes ARE the parallelism — one visible bench card each.
-            queue.forEach((scenario) => {
-                for (let lane = 0; lane < lanes; lane += 1) {
-                    void launchScenario({
-                        scenario,
-                        // Entry grouping stays on the PANEL's model id (the
-                        // entries render in this panel); the actual target
-                        // model/endpoint live in the provider + report.
-                        modelId: spec.id,
-                        modelLabel: spec.label ?? spec.id,
-                        provider: buildProvider(),
-                        actions: bench,
-                        plan: { ...plan, concurrency: 1 },
-                        // Lane tag only when there IS more than one lane —
-                        // single-lane runs keep the clean scenario caption
-                        entryLabel: lanes > 1 ? `${scenario.spec.label} · lane ${lane + 1}` : undefined
-                    });
-                }
-            });
-        };
+        const override = bench.targets[spec.id];
+        const [modelDraft, setModelDraft] = React.useState(override?.model ?? spec.id);
+        const [endpointDraft, setEndpointDraft] = React.useState(override?.endpoint ?? specEndpoint);
 
         return (
-            <Card>
-                {/* THE MODEL PAGE — one card per model, evenly spaced:
-                    <model name> / <run controls, right-aligned> /
-                    <description> / <benchmark entries> */}
-                <PanelShell>
-                    <PanelTitleRow>
-                        {/* Title testid kept from the old toolbar card (App test
-                            asserts the rail-click switch through it) */}
-                        <PanelTitle data-testid="bench-toolbar-model">{spec.label ?? spec.id}</PanelTitle>
-                        <PanelCount>
-                            {`${entries.length} benchmark${entries.length === 1 ? '' : 's'}`}
-                        </PanelCount>
-                    </PanelTitleRow>
+            <ColumnShell data-testid={`bench-column-${spec.id}`}>
+                {/* THE MODEL COLUMN — one column per selected model:
+                    <model name> / <target fields> / <benchmark entries> */}
+                <ColumnTitleRow>
+                    {/* Title testid kept from the old toolbar card (App test
+                        asserts model columns through it) */}
+                    <ColumnTitle data-testid="bench-toolbar-model">{spec.label ?? spec.id}</ColumnTitle>
+                    <ColumnCount>
+                        {`${entries.length} benchmark${entries.length === 1 ? '' : 's'}`}
+                    </ColumnCount>
+                </ColumnTitleRow>
 
-                    {/* THE TARGET FIELDS — editable model id + endpoint the
-                        benchmark runs against. Autofilled from the rail
-                        selection (activation + rail re-click), editable to
-                        benchmark models/endpoints OUTSIDE the catalog. */}
-                    <TargetRow>
-                        <TargetModelField>
-                            <TargetLabel>{'Model'}</TargetLabel>
-                            <TargetInput
-                                data-testid="bench-target-model"
-                                type="text"
-                                aria-label="Benchmark target model"
-                                spellCheck={false}
-                                value={modelDraft}
-                                placeholder={spec.id}
-                                onChange={(event) => {
-                                    setModelDraft(event.target.value);
-                                    bench.setTargetModel(event.target.value);
-                                }}
-                            />
-                        </TargetModelField>
-                        <TargetEndpointField>
-                            <TargetLabel>{'Endpoint'}</TargetLabel>
-                            <TargetInput
-                                data-testid="bench-target-endpoint"
-                                type="text"
-                                aria-label="Benchmark target endpoint"
-                                spellCheck={false}
-                                value={endpointDraft}
-                                placeholder={specEndpoint}
-                                onChange={(event) => {
-                                    setEndpointDraft(event.target.value);
-                                    bench.setTargetEndpoint(event.target.value);
-                                }}
-                            />
-                        </TargetEndpointField>
-                    </TargetRow>
+                {/* THE TARGET FIELDS — editable model id + endpoint this
+                    column's runs execute against. Show the model's own
+                    binding until edited; edits write through to the store. */}
+                <TargetStack>
+                    <TargetField>
+                        <TargetLabel>{'Model'}</TargetLabel>
+                        <TargetInput
+                            data-testid="bench-target-model"
+                            type="text"
+                            aria-label={`Benchmark target model for ${spec.label ?? spec.id}`}
+                            spellCheck={false}
+                            value={modelDraft}
+                            placeholder={spec.id}
+                            onChange={(event) => {
+                                setModelDraft(event.target.value);
+                                bench.setTarget(spec.id, event.target.value, endpointDraft);
+                            }}
+                        />
+                    </TargetField>
+                    <TargetField>
+                        <TargetLabel>{'Endpoint'}</TargetLabel>
+                        <TargetInput
+                            data-testid="bench-target-endpoint"
+                            type="text"
+                            aria-label={`Benchmark target endpoint for ${spec.label ?? spec.id}`}
+                            spellCheck={false}
+                            value={endpointDraft}
+                            placeholder={specEndpoint}
+                            onChange={(event) => {
+                                setEndpointDraft(event.target.value);
+                                bench.setTarget(spec.id, modelDraft, event.target.value);
+                            }}
+                        />
+                    </TargetField>
+                </TargetStack>
 
-                    {/* RUN CONTROLS directly under the model name (right-aligned) */}
-                    <RunBar scenarios={scenarioSpecs} onRun={handleRun} />
-
-                    {/* DESCRIPTION: what the ticked scenario does + the exact
-                        prompt it will send */}
-                    {primary ? (
-                        <PanelDescription>
-                            {primary.spec.description ? <PanelDescriptionText>{primary.spec.description}</PanelDescriptionText> : null}
-                            <PanelPrompt title={primary.spec.prompt}>{primary.spec.prompt}</PanelPrompt>
-                        </PanelDescription>
-                    ) : null}
-
-                    {/* BENCHMARK ENTRIES — newest first (the store prepends).
-                        Each click appends a new entry; entries run in parallel. */}
-                    {entries.length > 0 ? (
-                        <PanelEntries>
-                            {entries.map((entry) => (
-                                <EntryCard key={entry.id} entry={entry} />
-                            ))}
-                        </PanelEntries>
-                    ) : (
-                        <PanelEmpty>
-                            <PanelEmptyIcon aria-hidden="true">{'⚡'}</PanelEmptyIcon>
-                            <PanelEmptyTitle>{'Not benchmarked yet'}</PanelEmptyTitle>
-                            <PanelEmptyHint>{'Pick scenarios and press New Run — each run adds an entry here.'}</PanelEmptyHint>
-                        </PanelEmpty>
-                    )}
-                </PanelShell>
-            </Card>
+                {/* BENCHMARK ENTRIES — newest first (the store prepends).
+                    Each click appends a new entry; entries run in parallel. */}
+                {entries.length > 0 ? (
+                    <ColumnEntries>
+                        {entries.map((entry) => (
+                            <EntryCard key={entry.id} entry={entry} />
+                        ))}
+                    </ColumnEntries>
+                ) : (
+                    <ColumnEmpty>
+                        <ColumnEmptyIcon aria-hidden="true">{'⚡'}</ColumnEmptyIcon>
+                        <ColumnEmptyTitle>{'Not benchmarked yet'}</ColumnEmptyTitle>
+                        <ColumnEmptyHint>{'Pick scenarios and press New Run — each run adds an entry here.'}</ColumnEmptyHint>
+                    </ColumnEmpty>
+                )}
+            </ColumnShell>
         );
     };
-    return ModelBenchPanel;
+    return ModelBenchColumn;
 };
 
 // ── One benchmark entry ──────────────────────────────────────────────────────
@@ -277,6 +160,14 @@ const EntryCard = ({ entry }: { entry: BenchEntry }) => {
     // so the live rows render in stable order; only shown while the entry is
     // still running (each readout is removed the moment its run settles).
     const liveStreams = [...(entry.streaming ?? [])].sort((a, b) => a.index - b.index);
+    // COMPLETE-DATA DIALOG: 0-based index of the settled run whose data +
+    // complete output is open (null = closed). The run ROW ITSELF is the
+    // control (no extra icon) — clicking any settled row that produced
+    // output opens it; the overlay/✕ closes. The run is looked up from the
+    // CURRENT report at render time (never a stale copy).
+    const [outputIndex, setOutputIndex] = React.useState<number | null>(null);
+    const outputRun = outputIndex === null ? null : (report?.runs.find((run) => run.index === outputIndex) ?? null);
+    const outputReasoning = outputRun && typeof outputRun.reasoning === 'string' ? outputRun.reasoning : '';
     // CANCEL-AFFORDANCE hover: while the entry runs, its status chip is a
     // button that reveals "CANCEL" on hover (the operator's eye is already
     // on the RUNNING chip — turning it into the control avoids adding
@@ -325,17 +216,24 @@ const EntryCard = ({ entry }: { entry: BenchEntry }) => {
             ) : null}
 
             {/* LIVE STREAMING READOUTS: one row per IN-FLIGHT run — "N tok
-                received · X tok/s" updating as chunks stream in (cleared per
-                run the moment it settles). This is the ongoing detail the
-                panel shows between "0/3 runs" and the settled run rows. */}
+                received · X tok/s" plus the STREAMED WORDS growing in place
+                (cleared per run the moment it settles). This is the ongoing
+                detail the column shows between "0/3 runs" and the settled
+                run rows. */}
             {entry.status === 'running' && liveStreams.length > 0 ? (
                 <EntryLive>
                     {liveStreams.map((stream) => (
                         <EntryLiveRow key={stream.index}>
                             <EntryRunLabel>{`run ${stream.index + 1}`}</EntryRunLabel>
-                            <EntryLiveReadout>
-                                {`${formatCount(stream.tokens)} tok received · ${stream.tokensPerSec.toFixed(1)} tok/s · ${formatSeconds(stream.elapsed)}`}
-                            </EntryLiveReadout>
+                            <EntryLiveDetail>
+                                <EntryLiveReadout>
+                                    {`${formatCount(stream.tokens)} tok received · ${stream.tokensPerSec.toFixed(1)} tok/s · ${formatSeconds(stream.elapsed)}`}
+                                </EntryLiveReadout>
+                                {/* THE STREAMED WORDS: the run's live output
+                                    growing in place — clipped to a small
+                                    window that keeps the LATEST text visible */}
+                                <EntryLiveText>{stream.text}</EntryLiveText>
+                            </EntryLiveDetail>
                         </EntryLiveRow>
                     ))}
                 </EntryLive>
@@ -345,7 +243,7 @@ const EntryCard = ({ entry }: { entry: BenchEntry }) => {
             {/* Summary tiles + per-iteration rows once runs have settled.
                 THE TWO SPEED METRICS get their own tiles: Prefill (input —
                 promptTokens / ttft) and Decode (output — the summary's
-                throughput mean). */}
+                throughput mean). Avg TTFT rounds out the trio. */}
             {report ? (
                 <React.Fragment>
                     <EntryTiles>
@@ -361,30 +259,113 @@ const EntryCard = ({ entry }: { entry: BenchEntry }) => {
                             <EntryTileLabel>{'Avg TTFT'}</EntryTileLabel>
                             <EntryTileValue>{formatSeconds(report.summary.avgTtft)}</EntryTileValue>
                         </EntryTile>
-                        <EntryTile>
-                            <EntryTileLabel>{'Avg Time'}</EntryTileLabel>
-                            <EntryTileValue>{formatSeconds(report.summary.avgTime)}</EntryTileValue>
-                        </EntryTile>
-                        <EntryTile>
-                            <EntryTileLabel>{'Success'}</EntryTileLabel>
-                            <EntryTileValue>{formatPercent(report.summary.successRate)}</EntryTileValue>
-                        </EntryTile>
                     </EntryTiles>
 
                     <EntryRuns>
-                        {report.runs.map((run) => (
-                            <EntryRunRow key={run.index}>
-                                <EntryRunLabel>{`run ${run.index + 1}`}</EntryRunLabel>
-                                {run.error ? (
-                                    <EntryRunFailed title={run.error}>{`failed: ${run.error}`}</EntryRunFailed>
-                                ) : (
-                                    <EntryRunReadout>
-                                        {`${formatSeconds(run.totalTime)} · ${formatTokensPerSec(run.prefillTokensPerSec, 0)} prefill · ${run.tokensPerSec.toFixed(1)} tok/s decode · ${formatCount(run.totalTokens)} tok`}
-                                    </EntryRunReadout>
-                                )}
-                            </EntryRunRow>
-                        ))}
+                        {report.runs.map((run) => {
+                            // A row is clickable only when the run actually
+                            // produced output (failed runs carry none — the
+                            // engine omits it on errors); clicking opens the
+                            // complete-data dialog below
+                            const hasOutput = !run.error && Boolean(run.content || run.reasoning);
+                            return (
+                                <EntryRunRow
+                                    key={run.index}
+                                    clickable={hasOutput ? 'true' : 'false'}
+                                    onClick={hasOutput ? () => setOutputIndex(run.index) : undefined}
+                                    onKeyDown={
+                                        hasOutput
+                                            ? (event) => {
+                                                  if (event.key === 'Enter' || event.key === ' ') {
+                                                      event.preventDefault();
+                                                      setOutputIndex(run.index);
+                                                  }
+                                              }
+                                            : undefined
+                                    }
+                                    role={hasOutput ? 'button' : undefined}
+                                    tabIndex={hasOutput ? 0 : undefined}
+                                    aria-label={hasOutput ? `View run ${run.index + 1} — complete data and output` : undefined}
+                                    data-testid={`bench-run-${entry.id}-${run.index}`}
+                                >
+                                    <EntryRunLabel>{`run ${run.index + 1}`}</EntryRunLabel>
+                                    {run.error ? (
+                                        <EntryRunFailed title={run.error}>{`failed: ${run.error}`}</EntryRunFailed>
+                                    ) : (
+                                        <EntryRunReadout>
+                                            {`${formatSeconds(run.totalTime)} · ${formatTokensPerSec(run.prefillTokensPerSec, 0)} prefill · ${run.tokensPerSec.toFixed(1)} tok/s decode · ${formatCount(run.totalTokens)} tok`}
+                                        </EntryRunReadout>
+                                    )}
+                                </EntryRunRow>
+                            );
+                        })}
                     </EntryRuns>
+
+                    {/* COMPLETE-DATA DIALOG: a modal overlay + dialog box for
+                        the clicked run — its full measurement set, then the
+                        COMPLETE generated output (the reasoning block first
+                        when the model streamed one, then the answer text).
+                        Clicking the overlay or ✕ closes; the dialog box stops
+                        the propagation. */}
+                    {outputRun ? (
+                        <OutputOverlay
+                            onClick={() => setOutputIndex(null)}
+                            data-testid={`bench-output-overlay-${entry.id}`}
+                        >
+                            <OutputDialog
+                                role="dialog"
+                                aria-modal="true"
+                                aria-label={`Complete data and output of run ${outputRun.index + 1}`}
+                                data-testid={`bench-output-dialog-${entry.id}`}
+                                onClick={(event) => event.stopPropagation()}
+                            >
+                                <OutputHeader>
+                                    <OutputTitle>{`run ${outputRun.index + 1} — complete data`}</OutputTitle>
+                                    <OutputCloseButton
+                                        onClick={() => setOutputIndex(null)}
+                                        aria-label="Close the output dialog"
+                                        data-testid={`bench-output-close-${entry.id}`}
+                                    >
+                                        {'✕'}
+                                    </OutputCloseButton>
+                                </OutputHeader>
+                                <OutputScroll>
+                                    {/* THE RUN'S DATA: every measurement the
+                                        collapsed row line summarizes */}
+                                    <OutputStats>
+                                        {[
+                                            { label: 'TTFT', value: formatSeconds(outputRun.ttft) },
+                                            { label: 'Total', value: formatSeconds(outputRun.totalTime) },
+                                            { label: 'Start', value: formatSeconds(outputRun.startTime) },
+                                            { label: 'Prefill', value: formatTokensPerSec(outputRun.prefillTokensPerSec, 0) },
+                                            { label: 'Decode', value: formatTokensPerSec(outputRun.tokensPerSec) },
+                                            { label: 'Prompt tok', value: formatCount(outputRun.promptTokens) },
+                                            { label: 'Completion tok', value: formatCount(outputRun.completionTokens) },
+                                            { label: 'Total tok', value: formatCount(outputRun.totalTokens) },
+                                            { label: 'Output chars', value: formatCount(outputRun.contentLength) }
+                                        ].map((stat) => (
+                                            <OutputStat key={stat.label}>
+                                                <OutputStatLabel>{stat.label}</OutputStatLabel>
+                                                <OutputStatValue>{stat.value}</OutputStatValue>
+                                            </OutputStat>
+                                        ))}
+                                    </OutputStats>
+                                    {outputReasoning ? (
+                                        <React.Fragment>
+                                            <OutputSectionLabel>{'Reasoning'}</OutputSectionLabel>
+                                            <OutputReasoningText>{outputReasoning}</OutputReasoningText>
+                                        </React.Fragment>
+                                    ) : null}
+                                    {outputRun.content ? (
+                                        <React.Fragment>
+                                            <OutputSectionLabel>{'Output'}</OutputSectionLabel>
+                                            <OutputText>{outputRun.content}</OutputText>
+                                        </React.Fragment>
+                                    ) : null}
+                                </OutputScroll>
+                            </OutputDialog>
+                        </OutputOverlay>
+                    ) : null}
                 </React.Fragment>
             ) : null}
         </EntryShell>
@@ -392,35 +373,24 @@ const EntryCard = ({ entry }: { entry: BenchEntry }) => {
 };
 
 // ── Target fields (editable model + endpoint the runs execute against) ──────
-// One row under the title: [Model ____] [Endpoint ____]. The rail autofills
-// both; typing overrides the run target (framework/model-kit handleRun
-// rebuilds the provider from these).
+// Stacked vertically (narrow columns): label above input. Edits write
+// through to the store's per-plugin target override (framework/host.tsx
+// dispatch rebuilds the provider from these).
 
-const TargetRow = styledComponent('div', {
+// Column field stack: the two editable target fields
+const TargetStack = styledComponent('div', {
     display: 'flex',
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 10,
-    flexWrap: 'wrap',
+    flexDirection: 'column',
+    gap: 8,
     width: '100%',
     minWidth: 0
 });
 
 const TargetField = styledComponent('label', {
     display: 'flex',
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 8,
+    flexDirection: 'column',
+    gap: 4,
     minWidth: 0
-});
-
-// Model id: compact (ids are short); endpoint gets the remaining width
-const TargetModelField = styledComponent(TargetField, {
-    flex: '1 1 220px'
-});
-
-const TargetEndpointField = styledComponent(TargetField, {
-    flex: '2 1 320px'
 });
 
 const TargetLabel = styledComponent('span', {
@@ -436,9 +406,9 @@ const TargetLabel = styledComponent('span', {
 // styledComponent's typed surface lacks input props → cast (PlanInput
 // pattern in components/modules/RunBar.tsx:181-195).
 const TargetInput = styledComponent('input', {
-    flex: 1,
-    minWidth: 0,
+    width: '100%',
     boxSizing: 'border-box',
+    minWidth: 0,
     padding: '7px 10px',
     background: benchTheme.surface,
     border: `1px solid ${benchTheme.border}`,
@@ -454,16 +424,17 @@ const TargetInput = styledComponent('input', {
 
 // ── The recipe ───────────────────────────────────────────────────────────────
 // Assemble the full plugin from a model spec: one rail entry (the model),
-// the model-page panel, and the provider factory the panel compiles into
-// each scenario helper (the model's whole execution contribution).
+// the model column (rendered once per selection), and the provider factory
+// the dispatcher compiles into each scenario helper (the model's whole
+// execution contribution).
 export function createModelBench(spec: ModelBenchSpec): BenchPlugin {
     return defineBenchPlugin({
         id: spec.id,
         name: `${spec.label ?? spec.id} Bench`,
         // THE RAIL LABEL: one entry, the plugin's own model. The entry also
-        // carries the TARGET AUTOFILL payload (model + endpoint) — a rail
-        // click snaps the panel's two editable target fields to it
-        // (framework/host.tsx → store applyTarget).
+        // carries the model's own binding (model + endpoint) — the column's
+        // target fields autofill from it and the dispatcher falls back to it
+        // for untouched columns.
         entries: [
             {
                 id: spec.id,
@@ -474,8 +445,8 @@ export function createModelBench(spec: ModelBenchSpec): BenchPlugin {
                 endpoint: spec.baseUrl ?? DEFAULT_PROVIDER_URL
             }
         ],
-        panel: createPanel(spec),
-        // The execution binding: the panel builds THIS model's provider
+        panel: createColumn(spec),
+        // The execution binding: the dispatcher builds THIS model's provider
         // (HTTP transport bound to the catalog base URL, or an injected
         // demo/stub transport) per launch. Without it the model cannot be
         // benchmarked.
@@ -488,19 +459,24 @@ export { useBenchDashboard };
 
 // ── Styled components (framework chrome, shared by all model benches) ───────
 
-// Model-page shell: even vertical rhythm between title / run controls /
-// description / entries (spacing comes from the gap — the card body's
-// padding handles the outer breathing room)
-const PanelShell = styledComponent('div', {
+// Model column shell: the flex item of the columns row (framework/host.tsx
+// ColumnsRow). Every column shares the row's width equally and SQUISHES
+// (min-width: 0) as more models are selected — the row never wraps.
+const ColumnShell = styledComponent('div', {
+    flex: '1 1 0',
+    minWidth: 0,
     display: 'flex',
     flexDirection: 'column',
-    gap: 16,
-    width: '100%',
-    minWidth: 0
+    gap: 12,
+    padding: '14px 16px',
+    background: benchTheme.surface,
+    border: `1px solid ${benchTheme.border}`,
+    borderRadius: benchTheme.radius,
+    boxShadow: benchTheme.shadow
 });
 
-// Model-page title row (the card is header-less; the panel owns its title)
-const PanelTitleRow = styledComponent('div', {
+// Column title row (model name + entry count)
+const ColumnTitleRow = styledComponent('div', {
     display: 'flex',
     flexDirection: 'row',
     alignItems: 'baseline',
@@ -508,7 +484,7 @@ const PanelTitleRow = styledComponent('div', {
     minWidth: 0
 });
 
-const PanelTitle = styledComponent('h3', {
+const ColumnTitle = styledComponent('h3', {
     margin: 0,
     fontSize: 15,
     fontWeight: 700,
@@ -520,51 +496,28 @@ const PanelTitle = styledComponent('h3', {
     textOverflow: 'ellipsis'
 });
 
-const PanelCount = styledComponent('span', {
+const ColumnCount = styledComponent('span', {
     fontSize: 11,
     fontWeight: 600,
     letterSpacing: '0.06em',
     textTransform: 'uppercase',
     color: benchTheme.textMuted,
     fontFamily: benchTheme.sansFont,
-    flexShrink: 0
-});
-
-// Description block under the run controls
-const PanelDescription = styledComponent('div', {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 4,
-    minWidth: 0
-});
-
-const PanelDescriptionText = styledComponent('span', {
-    fontSize: 12,
-    color: benchTheme.textMuted,
-    fontFamily: benchTheme.sansFont
-});
-
-const PanelPrompt = styledComponent('span', {
-    fontSize: 12,
-    color: benchTheme.textSecondary,
-    fontFamily: benchTheme.monoFont,
-    overflow: 'hidden',
-    whiteSpace: 'nowrap',
-    textOverflow: 'ellipsis',
-    minWidth: 0
+    flexShrink: 0,
+    whiteSpace: 'nowrap'
 });
 
 // Benchmark entries list (newest first — the store prepends)
-const PanelEntries = styledComponent('div', {
+const ColumnEntries = styledComponent('div', {
     display: 'flex',
     flexDirection: 'column',
     gap: 12,
-    // Divider between the description block and the run history
+    // Divider between the target fields and the run history
     borderTop: `1px solid ${benchTheme.border}`,
     paddingTop: 14
 });
 
-// One entry: a soft inset card inside the model panel
+// One entry: a soft inset card inside the model column
 const EntryShell = styledComponent('div', {
     display: 'flex',
     flexDirection: 'column',
@@ -658,7 +611,7 @@ const EntryFailed = styledComponent('span', {
 });
 
 // Live streaming readouts (in-flight runs only — the strip disappears once
-// every run settled; same row geometry as the settled run rows below)
+// every run settled; same leading columns as the settled run rows below)
 const EntryLive = styledComponent('div', {
     display: 'flex',
     flexDirection: 'column',
@@ -674,6 +627,14 @@ const EntryLiveRow = styledComponent('div', {
     borderBottom: `1px solid ${benchTheme.border}`
 });
 
+// In-flight detail stack: the counts line + the streamed words below it
+const EntryLiveDetail = styledComponent('div', {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 4,
+    minWidth: 0
+});
+
 // Live readout text — accent-tinted so in-flight rows read as LIVE data
 // (distinct from the muted settled-run readouts)
 const EntryLiveReadout = styledComponent('span', {
@@ -685,11 +646,28 @@ const EntryLiveReadout = styledComponent('span', {
     textOverflow: 'ellipsis'
 });
 
-// Summary tiles row (5 equal columns: Prefill / Decode / Avg TTFT /
-// Avg Time / Success — the two speed metrics each get their own tile)
+// THE STREAMED WORDS — the run's live output growing in place while chunks
+// land. Clipped to a small window; the flex-end alignment keeps the LATEST
+// text in view as the block outgrows the cap (the top scrolls out).
+const EntryLiveText = styledComponent('div', {
+    fontFamily: benchTheme.monoFont,
+    fontSize: 11,
+    lineHeight: 1.5,
+    color: benchTheme.textSecondary,
+    whiteSpace: 'pre-wrap',
+    wordBreak: 'break-word',
+    maxHeight: 84,
+    overflow: 'hidden',
+    display: 'flex',
+    flexDirection: 'column',
+    justifyContent: 'flex-end'
+});
+
+// Summary tiles row (3 equal columns: Prefill / Decode / Avg TTFT —
+// the two speed metrics each get their own tile)
 const EntryTiles = styledComponent('div', {
     display: 'grid',
-    gridTemplateColumns: 'repeat(5, 1fr)',
+    gridTemplateColumns: 'repeat(3, 1fr)',
     gap: 10
 });
 
@@ -730,13 +708,18 @@ const EntryRuns = styledComponent('div', {
     gap: 2
 });
 
-const EntryRunRow = styledComponent('div', {
+// One run row. The row itself is the control: runs that produced output are
+// clickable (pointer cursor + keyboard focusable) and open the complete-data
+// dialog; failed rows stay inert.
+const EntryRunRow = styledComponent<{ clickable: string }>('div', {
     display: 'grid',
     gridTemplateColumns: '56px 1fr',
     gap: 12,
     alignItems: 'center',
     padding: '5px 0',
-    borderBottom: `1px solid ${benchTheme.border}`
+    borderBottom: `1px solid ${benchTheme.border}`,
+    cursor: ({ clickable }) => (clickable === 'true' ? 'pointer' : 'default'),
+    outline: 'none'
 });
 
 const EntryRunLabel = styledComponent('span', {
@@ -763,26 +746,186 @@ const EntryRunFailed = styledComponent('span', {
     textOverflow: 'ellipsis'
 });
 
-// Panel empty state
-const PanelEmpty = styledComponent('div', {
+// ── Per-run complete-data affordance (row click → dialog) ────────────────────
+// Settled rows that produced output are clickable and open the modal dialog
+// with that run's full measurements + complete generated output. Failed runs
+// carry no output → their rows stay inert.
+
+// The modal overlay: dims the page and centers the dialog box; clicking it
+// closes (the dialog box stops the propagation)
+const OutputOverlay = styledComponent('div', {
+    position: 'fixed',
+    inset: 0,
+    zIndex: 60,
+    background: 'rgba(0, 0, 0, 0.55)',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 24
+});
+
+// The dialog box: capped height, header on top, the output scrolling INSIDE
+// so even thousand-word generations stay navigable
+const OutputDialog = styledComponent('div', {
+    background: benchTheme.surface,
+    border: `1px solid ${benchTheme.border}`,
+    borderRadius: benchTheme.radius,
+    boxShadow: benchTheme.shadow,
+    width: '100%',
+    maxWidth: 720,
+    maxHeight: '80vh',
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 10,
+    padding: '16px 18px'
+});
+
+// Dialog header: title + close button on one line
+const OutputHeader = styledComponent('div', {
+    display: 'flex',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+    flexShrink: 0
+});
+
+const OutputTitle = styledComponent('span', {
+    fontSize: 13,
+    fontWeight: 700,
+    color: benchTheme.textPrimary,
+    fontFamily: benchTheme.sansFont,
+    overflow: 'hidden',
+    whiteSpace: 'nowrap',
+    textOverflow: 'ellipsis'
+});
+
+const OutputCloseButton = styledComponent('button', {
+    border: 'none',
+    background: 'transparent',
+    color: benchTheme.textMuted,
+    fontSize: 13,
+    lineHeight: 1,
+    padding: '4px 6px',
+    borderRadius: 6,
+    cursor: 'pointer',
+    flexShrink: 0,
+    fontFamily: benchTheme.sansFont
+});
+
+// The run's measurement grid inside the dialog (3 equal columns of stat
+// tiles — the data the collapsed row line summarized)
+const OutputStats = styledComponent('div', {
+    display: 'grid',
+    gridTemplateColumns: 'repeat(3, 1fr)',
+    gap: 8,
+    flexShrink: 0
+});
+
+// One stat tile in the dialog's measurement grid
+const OutputStat = styledComponent('div', {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 2,
+    padding: '7px 10px',
+    borderRadius: 8,
+    background: benchTheme.surfaceFaint,
+    border: `1px solid ${benchTheme.border}`,
+    minWidth: 0
+});
+
+const OutputStatLabel = styledComponent('span', {
+    fontSize: 9,
+    fontWeight: 700,
+    letterSpacing: '0.07em',
+    textTransform: 'uppercase',
+    color: benchTheme.textMuted,
+    fontFamily: benchTheme.sansFont,
+    whiteSpace: 'nowrap',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis'
+});
+
+const OutputStatValue = styledComponent('span', {
+    fontSize: 13,
+    fontWeight: 600,
+    color: benchTheme.textPrimary,
+    fontFamily: benchTheme.monoFont,
+    whiteSpace: 'nowrap',
+    overflow: 'hidden',
+    textOverflow: 'ellipsis'
+});
+
+// The scrollable output area inside the dialog (stats + reasoning + answer
+// stack)
+const OutputScroll = styledComponent('div', {
+    overflow: 'auto',
+    minHeight: 0,
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 10
+});
+
+// Section caption ("Reasoning") above an output block
+const OutputSectionLabel = styledComponent('span', {
+    fontSize: 10,
+    fontWeight: 700,
+    letterSpacing: '0.07em',
+    textTransform: 'uppercase',
+    color: benchTheme.textMuted,
+    fontFamily: benchTheme.sansFont,
+    flexShrink: 0
+});
+
+// One pre-wrapped output block (the answer); reasoning renders in its own
+// muted variant below
+const OutputText = styledComponent('div', {
+    whiteSpace: 'pre-wrap',
+    wordBreak: 'break-word',
+    fontFamily: benchTheme.monoFont,
+    fontSize: 12,
+    lineHeight: 1.6,
+    color: benchTheme.textPrimary,
+    background: benchTheme.surfaceFaint,
+    border: `1px solid ${benchTheme.border}`,
+    borderRadius: 8,
+    padding: 12
+});
+
+const OutputReasoningText = styledComponent('div', {
+    whiteSpace: 'pre-wrap',
+    wordBreak: 'break-word',
+    fontFamily: benchTheme.monoFont,
+    fontSize: 12,
+    lineHeight: 1.6,
+    color: benchTheme.textSecondary,
+    background: benchTheme.surfaceFaint,
+    border: `1px solid ${benchTheme.border}`,
+    borderRadius: 8,
+    padding: 12
+});
+
+// Column empty state
+const ColumnEmpty = styledComponent('div', {
     display: 'flex',
     flexDirection: 'column',
     alignItems: 'center',
     gap: 8,
-    padding: '48px 20px'
+    padding: '40px 16px'
 });
 
-const PanelEmptyIcon = styledComponent('span', { fontSize: 24 });
+const ColumnEmptyIcon = styledComponent('span', { fontSize: 24 });
 
-const PanelEmptyTitle = styledComponent('span', {
+const ColumnEmptyTitle = styledComponent('span', {
     fontSize: 14,
     fontWeight: 600,
     color: benchTheme.textSecondary,
     fontFamily: benchTheme.sansFont
 });
 
-const PanelEmptyHint = styledComponent('span', {
+const ColumnEmptyHint = styledComponent('span', {
     fontSize: 12,
     color: benchTheme.textMuted,
-    fontFamily: benchTheme.sansFont
+    fontFamily: benchTheme.sansFont,
+    textAlign: 'center'
 });

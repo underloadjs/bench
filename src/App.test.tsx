@@ -12,9 +12,9 @@
 //      the provider's error message surfaced.
 //   3. Successful load (catalog with 2 models) → the dashboard mounts and
 //      every model lands in the rail (loader adds them one by one).
-//   4. "New Run" executes the ACTIVE plugin against the SAME base URL —
-//      the stub answers the streaming chat/completions POST, the run
-//      completes, and the status pill settles on DONE with real stats.
+//   4. "New Run" executes the default-selected FIRST model against the SAME
+//      base URL — the stub answers the streaming chat/completions POST, the
+//      run completes, and the status pill settles on DONE with real stats.
 import React from 'react';
 import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi, afterEach } from 'vitest';
@@ -203,7 +203,7 @@ describe('App (dev shell)', () => {
         cleanup();
     }, 10000);
 
-    it('New Run executes the active plugin against the loaded provider and settles on DONE', async () => {
+    it('New Run executes the default-selected first model and settles on DONE', async () => {
         // Sanity: the fleet config the App bakes into each plugin
         expect(BENCH_ITERATIONS).toBe(3);
         expect(typeof BENCH_PROMPT).toBe('string');
@@ -220,7 +220,8 @@ describe('App (dev shell)', () => {
             expect(screen.getByText('Model Benchmark')).toBeTruthy();
         });
 
-        // Run the ACTIVE plugin (registry falls back to the first rail entry)
+        // Run the default-selected FIRST model (the registry's default-once
+        // fallback selects it on a fresh dashboard)
         await act(async () => {
             screen.getByLabelText('Start a new benchmark run').click();
         });
@@ -257,7 +258,7 @@ describe('App (dev shell)', () => {
         cleanup();
     }, 20000);
 
-    it('activates a plugin when its rail entry is clicked (panel switches to that model)', async () => {
+    it('rail clicks toggle model columns (multi-select: several columns at once)', async () => {
         stubFetch();
         render(<App />);
 
@@ -270,40 +271,46 @@ describe('App (dev shell)', () => {
             expect(screen.getByText('Model Benchmark')).toBeTruthy();
         });
 
-        // The registry falls back to the FIRST plugin — after the stripped-name
-        // sort that is the org-prefixed modal/kimi-k3 (display "kimi-k3 (modal)")
+        // Default selection: the FIRST rail model renders as the single
+        // column (registry's default-once fallback)
+        const columnTitles = () =>
+            screen.getAllByTestId('bench-toolbar-model').map((node) => node.textContent);
         await waitFor(() => {
-            expect(screen.getByTestId('bench-toolbar-model').textContent).toBe('kimi-k3 (modal)');
+            expect(columnTitles()).toEqual(['kimi-k3 (modal)']);
         });
 
-        // Click the mock-alpha rail entry — the active plugin must switch
+        // Tick a second model — its column appears BESIDE the first
         await act(async () => {
             screen.getByLabelText('Benchmark mock-alpha').click();
         });
-
-        // The toolbar (and panel) now render the clicked plugin's model.
-        // REGRESSION: rail clicks used to write `bench.selectedPluginId`
-        // through the useBenchDashboard() WRAPPER, which silently dropped
-        // the write (only the store proxy triggers re-renders) — the panel
-        // never switched and the rail felt dead.
         await waitFor(() => {
-            expect(screen.getByTestId('bench-toolbar-model').textContent).toBe('mock-alpha');
+            expect(columnTitles()).toEqual(['kimi-k3 (modal)', 'mock-alpha']);
         });
-        // The panel heading switched to the clicked model too
+
+        // Tick a third — three columns side by side
+        await act(async () => {
+            screen.getByLabelText('Benchmark mock-beta').click();
+        });
         await waitFor(() => {
-            expect(screen.getAllByText('mock-alpha').length).toBeGreaterThan(0);
+            expect(columnTitles()).toEqual(['kimi-k3 (modal)', 'mock-alpha', 'mock-beta']);
+        });
+
+        // Untick mock-alpha — its column disappears (multi-select, not the
+        // old single-activation swap)
+        await act(async () => {
+            screen.getByLabelText('Benchmark mock-alpha').click();
+        });
+        await waitFor(() => {
+            expect(columnTitles()).toEqual(['kimi-k3 (modal)', 'mock-beta']);
         });
 
         cleanup();
     }, 10000);
 
-    it('rail clicks autofill the target fields, and edits reroute the run outside the catalog', async () => {
-        // THE TARGET FIELDS: the rail menu is the AUTOFILL source for the
-        // two editable fields (model + endpoint) every run executes
-        // against; editing them benchmarks models/endpoints OUTSIDE the
-        // loaded catalog. This test pins the full contract: activation
-        // autofill → rail-click re-autofill → manual edit → the run POSTs
-        // to the EDITED endpoint with the EDITED model id.
+    it('New Run benches EVERY selected model in one go (one entry per model)', async () => {
+        // THE UPGRADE CONTRACT: execution is separated from the models — one
+        // New Run click dispatches the ticked scenario against EVERY
+        // selected model (a column each) simultaneously.
         const completions: Array<{ url: string; body: { model?: string } | null }> = [];
         globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
             const url = String(input);
@@ -327,47 +334,134 @@ describe('App (dev shell)', () => {
             expect(screen.getByText('Model Benchmark')).toBeTruthy();
         });
 
-        // ACTIVATION AUTOFILL: the registry falls back to the first rail
-        // entry (modal/kimi-k3) — both fields snap to its binding
-        const modelInput = () => screen.getByTestId('bench-target-model') as HTMLInputElement;
-        const endpointInput = () => screen.getByTestId('bench-target-endpoint') as HTMLInputElement;
-        await waitFor(() => {
-            expect(modelInput().value).toBe('modal/kimi-k3');
-        });
-        expect(endpointInput().value).toBe('http://mock.local/v1');
-
-        // RAIL-CLICK AUTOFILL: clicking another model updates both fields
+        // Tick TWO models (default first + mock-alpha), then run ONCE
         await act(async () => {
             screen.getByLabelText('Benchmark mock-alpha').click();
         });
         await waitFor(() => {
-            expect(modelInput().value).toBe('mock-alpha');
-        });
-        expect(endpointInput().value).toBe('http://mock.local/v1');
-
-        // EDIT: retarget both fields OUTSIDE the loaded catalog
-        await act(async () => {
-            fireEvent.change(modelInput(), { target: { value: 'custom-model' } });
+            expect(screen.getAllByTestId('bench-toolbar-model').length).toBe(2);
         });
         await act(async () => {
-            fireEvent.change(endpointInput(), { target: { value: 'http://custom.local/v1' } });
+            screen.getByLabelText('Start a new benchmark run').click();
         });
-        expect(modelInput().value).toBe('custom-model');
-        expect(endpointInput().value).toBe('http://custom.local/v1');
 
-        // THE RUN follows the EDITED target: completions POST to the custom
-        // endpoint with the custom model id as the routing key
+        // BOTH models were executed against the loaded provider
+        await waitFor(
+            () => {
+                const models = completions.map((call) => call.body?.model);
+                expect(models).toContain('modal/kimi-k3');
+                expect(models).toContain('mock-alpha');
+            },
+            { timeout: 5000 }
+        );
+
+        // One settled entry per selected model, each with the full plan
+        await waitFor(
+            () => {
+                const entries = Array.from(document.querySelectorAll('[data-testid^="bench-entry-"]'));
+                expect(entries.length).toBe(2);
+                entries.forEach((entry) => {
+                    expect(entry.textContent).toContain('3/3 runs');
+                    expect(entry.textContent).toContain('DONE');
+                });
+            },
+            { timeout: 10000 }
+        );
+
+        cleanup();
+    }, 20000);
+
+    it('column target fields autofill per model, and edits reroute that column outside the catalog', async () => {
+        // THE PER-COLUMN TARGETS: each model column carries the two editable
+        // fields (model + endpoint) its runs execute against — autofilled
+        // from the model's own binding, editable to benchmark models/
+        // endpoints OUTSIDE the loaded catalog. This test pins: activation
+        // autofill per column → manual edit → New Run posts BOTH the
+        // untouched column's own binding AND the edited column's custom
+        // target.
+        const completions: Array<{ url: string; body: { model?: string } | null }> = [];
+        globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+            const url = String(input);
+            if (url.endsWith('/models')) {
+                return new Response(JSON.stringify(STUB_CATALOG), { status: 200, headers: { 'Content-Type': 'application/json' } });
+            }
+            if (url.endsWith('/chat/completions')) {
+                completions.push({ url, body: init?.body ? JSON.parse(init.body as string) : null });
+                return sseResponse();
+            }
+            throw new Error(`unexpected fetch: ${url}`);
+        }) as unknown as typeof fetch;
+
+        render(<App />);
+
+        await setUrl('http://mock.local/v1');
+        await act(async () => {
+            loadButton().click();
+        });
+        await waitFor(() => {
+            expect(screen.getByText('Model Benchmark')).toBeTruthy();
+        });
+
+        // Column-scoped field helpers: each column carries its OWN pair of
+        // target fields
+        const columnFor = (title: string): HTMLElement => {
+            const found = Array.from(document.querySelectorAll('[data-testid^="bench-column-"]')).find(
+                (column) => column.querySelector('[data-testid="bench-toolbar-model"]')?.textContent === title
+            );
+            if (!found) throw new Error(`column not found: ${title}`);
+            return found as HTMLElement;
+        };
+        const fieldIn = (column: HTMLElement, testId: string) =>
+            column.querySelector(`[data-testid="${testId}"]`) as HTMLInputElement;
+
+        // ACTIVATION AUTOFILL: the default column (modal/kimi-k3) shows its
+        // own binding in both fields
+        const kimiColumn = columnFor('kimi-k3 (modal)');
+        await waitFor(() => {
+            expect(fieldIn(kimiColumn, 'bench-target-model').value).toBe('modal/kimi-k3');
+        });
+        expect(fieldIn(kimiColumn, 'bench-target-endpoint').value).toBe('http://mock.local/v1');
+
+        // Tick mock-alpha — its column autofills ITS binding
+        await act(async () => {
+            screen.getByLabelText('Benchmark mock-alpha').click();
+        });
+        const alphaColumn = await waitFor(() => {
+            const column = columnFor('mock-alpha');
+            expect(fieldIn(column, 'bench-target-model').value).toBe('mock-alpha');
+            return column;
+        });
+        expect(fieldIn(alphaColumn, 'bench-target-endpoint').value).toBe('http://mock.local/v1');
+
+        // EDIT: retarget mock-alpha's column OUTSIDE the loaded catalog
+        await act(async () => {
+            fireEvent.change(fieldIn(alphaColumn, 'bench-target-model'), { target: { value: 'custom-model' } });
+        });
+        await act(async () => {
+            fireEvent.change(fieldIn(alphaColumn, 'bench-target-endpoint'), { target: { value: 'http://custom.local/v1' } });
+        });
+        expect(fieldIn(alphaColumn, 'bench-target-model').value).toBe('custom-model');
+        expect(fieldIn(alphaColumn, 'bench-target-endpoint').value).toBe('http://custom.local/v1');
+
+        // THE RUN follows BOTH columns: the untouched kimi-k3 column posts
+        // its own binding; the edited column posts to the CUSTOM endpoint
+        // with the CUSTOM model id as the routing key
         await act(async () => {
             screen.getByLabelText('Start a new benchmark run').click();
         });
         await waitFor(
             () => {
-                expect(completions.some((call) => call.url === 'http://custom.local/v1/chat/completions')).toBe(true);
+                const edited = completions.find(
+                    (call) => call.url === 'http://custom.local/v1/chat/completions' && call.body?.model === 'custom-model'
+                );
+                const own = completions.find(
+                    (call) => call.url === 'http://mock.local/v1/chat/completions' && call.body?.model === 'modal/kimi-k3'
+                );
+                expect(edited).toBeTruthy();
+                expect(own).toBeTruthy();
             },
             { timeout: 5000 }
         );
-        const sent = completions.find((call) => call.url === 'http://custom.local/v1/chat/completions');
-        expect(sent?.body?.model).toBe('custom-model');
 
         cleanup();
     }, 20000);

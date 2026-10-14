@@ -92,6 +92,10 @@ const measureRun = async (
     // reported live through onStream (est. tokens = ceil(chars / 4), the same
     // heuristic the final token accounting uses when usage is missing)
     let received = 0;
+    // THE STREAMED TEXT: the output received so far, accumulated across
+    // chunks and carried by every onStream tick — what a UI renders as
+    // growing words while the run is still generating
+    let streamedText = '';
 
     try {
         // Stream the completion; each chunk re-enters here to stamp TTFT once
@@ -113,11 +117,13 @@ const measureRun = async (
                 }
 
                 // LIVE STREAMING FEEDBACK: accumulate the received text and fire a
-                // tick so a UI can show "N tok received · X tok/s" while the run
-                // is still generating. `first` flags the run's first chunk
-                // (received was 0 before this chunk landed).
+                // tick so a UI can show "N tok received · X tok/s" plus the
+                // streamed WORDS while the run is still generating. `first`
+                // flags the run's first chunk (received was 0 before this
+                // chunk landed).
                 if (onStream) {
                     received += chunk.length;
+                    streamedText += chunk;
                     const elapsed = (stamp - runStart) / 1000;
                     // Live sustained rate mirrors the final tokensPerSec math —
                     // measured over the generation phase only (post-TTFT),
@@ -129,6 +135,7 @@ const measureRun = async (
                         index,
                         chars: received,
                         tokens,
+                        text: streamedText,
                         elapsed,
                         tokensPerSec: generationPhase > 0 ? tokens / generationPhase : 0,
                         first: received === chunk.length
@@ -179,7 +186,12 @@ const measureRun = async (
             totalTokens,
             contentLength: content.length,
             prefillTokensPerSec,
-            tokensPerSec
+            tokensPerSec,
+            // THE COMPLETE OUTPUT rides on the record so a UI can show it on
+            // demand (per-run "view output" dialog). reasoning only lands when
+            // the model actually streamed one — absent otherwise.
+            content,
+            ...(reasoning ? { reasoning } : {})
         };
     } catch (error: unknown) {
         // The run failed — record how far it got and the error message.

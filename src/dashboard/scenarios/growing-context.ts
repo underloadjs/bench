@@ -304,6 +304,9 @@ const executeGrowingContext = async (helper: BenchScenarioHelper) => {
             // (est. tokens = ceil(chars / 4), the same heuristic the final
             // token accounting uses when usage is missing)
             let received = 0;
+            // The streamed text so far this turn — carried by every live
+            // readout so the entry card shows the words growing
+            let turnText = '';
 
             try {
                 // Snapshot the history for this request — the provider gets
@@ -321,10 +324,11 @@ const executeGrowingContext = async (helper: BenchScenarioHelper) => {
 
                     // LIVE STREAMING FEEDBACK: accumulate the received text
                     // into this turn's readout so the entry card shows
-                    // "N tok received · X tok/s" while the turn generates
-                    // (`first` = this chunk is the turn's first — the
-                    // publisher flushes it immediately)
+                    // "N tok received · X tok/s" plus the streamed WORDS
+                    // while the turn generates (`first` = this chunk is the
+                    // turn's first — the publisher flushes it immediately)
                     received += chunk.length;
+                    turnText += chunk;
                     const elapsed = (stamp - runStart) / 1000;
                     // LIVE rate = DECODE speed (the OUTPUT metric, same
                     // definition as the settled run): output tokens received
@@ -340,6 +344,7 @@ const executeGrowingContext = async (helper: BenchScenarioHelper) => {
                             index: runIndex,
                             chars: received,
                             tokens: streamedTokens,
+                            text: turnText,
                             elapsed,
                             tokensPerSec: generationPhase > 0 ? streamedTokens / generationPhase : 0
                         },
@@ -380,7 +385,12 @@ const executeGrowingContext = async (helper: BenchScenarioHelper) => {
                     totalTokens,
                     contentLength: content.length,
                     prefillTokensPerSec,
-                    tokensPerSec
+                    tokensPerSec,
+                    // The turn's complete output rides on the record (same
+                    // contract as the core runner) so the UI can show it on
+                    // demand; reasoning lands only when the model streamed one
+                    content,
+                    ...(reasoning ? { reasoning } : {})
                 };
 
                 // Replay the response into the next turn's history — THIS is
