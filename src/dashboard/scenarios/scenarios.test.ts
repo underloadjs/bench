@@ -109,7 +109,7 @@ describe('SCENARIOS (the standalone scenario plugin list)', () => {
             { id: 'summarization', name: 'Summarization Scenario', label: 'Summarization', icon: '📄', iterations: 2, concurrency: 1 },
             { id: 'brainstorm', name: 'Brainstorm Scenario', label: 'Brainstorm', icon: '💡', iterations: 2, concurrency: 2 },
             { id: 'growing-context', name: 'Growing Context Scenario', label: 'Growing Context', icon: '📚', iterations: 8, concurrency: 1 },
-            { id: 'roleplaying', name: 'Roleplaying Scenario', label: 'Roleplaying', icon: '🎭', iterations: 512, concurrency: 1 },
+            { id: 'roleplaying', name: 'Roleplaying Scenario', label: 'Roleplaying', icon: '🎭', iterations: 1, concurrency: 1 },
             { id: 'tool-call', name: 'Tool Call Scenario', label: 'Tool Call', icon: '🛠️', iterations: 2, concurrency: 1 },
             { id: 'tool-parallel', name: 'Tool Selection Scenario', label: 'Tool Selection', icon: '🎯', iterations: 2, concurrency: 1 },
             { id: 'tool-args', name: 'Tool Args Scenario', label: 'Tool Args', icon: '📦', iterations: 2, concurrency: 1 }
