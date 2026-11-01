@@ -213,6 +213,59 @@ export const cancelEntryRun = (entryId: string): void => {
     entryCancellers.get(entryId)?.();
 };
 
+// ── Entry deletion ───────────────────────────────────────────────────────────
+// A SETTLED benchmark entry (CANCELLED or COMPLETED) is a record the operator
+// keeps or throws away; a RUNNING one is not — its runs are still landing, so
+// deleting it mid-flight would drop numbers that have not settled yet (cancel
+// it first, then delete). The rules live in this PURE helper so the delete
+// action below is a plain write-through and tests can pin them without
+// mounting the React tree.
+export type BenchEntryDeletion = {
+    // The entries left (unchanged reference when nothing was deleted)
+    entries: BenchEntry[];
+    // The fleet roll-up (latest report per model) reconciled with those entries
+    reports: BenchmarkReport[];
+};
+
+/** True when an entry is deletable — i.e. settled (cancelled or completed). */
+export const isEntrySettled = (entry?: BenchEntry): boolean => entry !== undefined && entry.status !== 'running';
+
+/**
+ * Pure: the entries + reports left after ONE settled entry is deleted.
+ *
+ * Nothing changes when the id is unknown or the entry is still RUNNING (the
+ * caller's delete is refused). Otherwise the entry leaves `entries`, and the
+ * fleet roll-up (`reports`, keyed by report model) re-points at the NEWEST
+ * remaining entry carrying that model's report — or drops the model entirely
+ * when no remaining entry has one. An entry that never produced a report (its
+ * execute threw before any run settled) never fed the roll-up, so reports stay
+ * untouched for it.
+ */
+export const withoutEntryRecord = (
+    entries: BenchEntry[],
+    reports: BenchmarkReport[],
+    entryId: string
+): BenchEntryDeletion => {
+    const victim = entries.find((entry) => entry.id === entryId);
+    // Unknown id, or still running → the same arrays back (the action detects
+    // the refused delete by reference identity and writes nothing)
+    if (!victim || !isEntrySettled(victim)) return { entries, reports };
+
+    const rest = entries.filter((entry) => entry.id !== entryId);
+    if (!victim.report) return { entries: rest, reports };
+
+    // Entries are NEWEST FIRST, so the first match is the freshest reading
+    const model = victim.report.model;
+    const replacement = rest.find((entry) => entry.report?.model === model)?.report;
+    return {
+        entries: rest,
+        reports: [
+            ...reports.filter((report) => report.model !== model),
+            ...(replacement ? [replacement] : [])
+        ]
+    };
+};
+
 // Module-level initial values — the provider's `data` prop overrides these
 // per instance (see BenchDashboard.tsx for the merge).
 //
@@ -346,6 +399,25 @@ export const useBenchDashboard = () => {
          */
         cancelEntry: (entryId: string) => {
             cancelEntryRun(entryId);
+        },
+        /**
+         * DELETES one benchmark entry — the entry card's hover DELETE chip.
+         * Only a SETTLED entry is deletable: CANCELLED (its runs are on record
+         * as error: 'cancelled') or COMPLETED. A RUNNING entry is refused (its
+         * runs are still landing — cancel it first), as is an unknown id.
+         * Deleting also reconciles the fleet roll-up (`reports`): the deleted
+         * entry's model falls back to the newest remaining entry's report, or
+         * leaves the roll-up when no other entry carries one.
+         */
+        deleteEntry: (entryId: string) => {
+            const next = withoutEntryRecord(bench.entries, bench.reports, entryId);
+            // Same references back → refused (running) or nothing to delete
+            if (next.entries === bench.entries) return;
+            // Its canceller is already gone for settled entries; dropping it
+            // again keeps the registry from holding a stale id in edge cases
+            unregisterEntryCancel(entryId);
+            bench.entries = next.entries;
+            bench.reports = next.reports;
         },
         /** Sets the dashboard-wide status (e.g. external runner integration). */
         setStatus: (status: BenchDashboardStatus) => {

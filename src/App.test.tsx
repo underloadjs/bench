@@ -659,4 +659,90 @@ describe('App (dev shell)', () => {
 
         cleanup();
     }, 30000);
+
+    it('a cancelled entry gets a DELETE chip (running entries have none)', async () => {
+        // THE OPERATOR FLOW: cancel a run, then delete it. Deletion is only
+        // ever offered once the entry SETTLES — cancelled or completed — so a
+        // running entry carries the CANCEL control and NO delete affordance
+        // (store.deleteEntry refuses a running entry too, see context/store.ts).
+        // The stub holds every completion stream open forever, so the entry is
+        // reliably observable in its RUNNING state; the stream errors out when
+        // the run's signal aborts, which is how the engine records 'cancelled'.
+        globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+            const url = String(input);
+            if (url.endsWith('/models')) {
+                return new Response(JSON.stringify(STUB_CATALOG), { status: 200, headers: { 'Content-Type': 'application/json' } });
+            }
+            if (url.endsWith('/chat/completions')) {
+                return new Response(
+                    new ReadableStream({
+                        start: (controller) => {
+                            // Nothing is ever enqueued — the run hangs
+                            // mid-generation until the operator cancels
+                            init?.signal?.addEventListener('abort', () => controller.error(new Error('aborted')));
+                        }
+                    }),
+                    { status: 200, headers: { 'Content-Type': 'text/event-stream' } }
+                );
+            }
+            throw new Error(`unexpected fetch: ${url}`);
+        }) as unknown as typeof fetch;
+
+        render(<App />);
+
+        await setUrl('http://mock.local/v1');
+        await act(async () => {
+            loadButton().click();
+        });
+        await waitFor(() => {
+            expect(screen.getByText('Model Benchmark')).toBeTruthy();
+        });
+
+        // One iteration → one entry with a single in-flight run
+        await act(async () => {
+            fireEvent.change(screen.getByTestId('bench-iterations-input'), { target: { value: '1' } });
+        });
+        await act(async () => {
+            screen.getByLabelText('Start a new benchmark run').click();
+        });
+
+        // RUNNING: the chip is the CANCEL control…
+        const cancelChip = await waitFor(() => {
+            const chip = document.querySelector('[data-testid^="bench-cancel-"]');
+            if (!chip) throw new Error('no cancel control yet');
+            return chip as HTMLElement;
+        });
+        // …and there is NOTHING to delete yet
+        expect(document.querySelector('[data-testid^="bench-delete-"]')).toBeNull();
+
+        // CANCEL it
+        await act(async () => {
+            cancelChip.click();
+        });
+
+        // Settled as CANCELLED — the same chip is now the DELETE control
+        const deleteChip = await waitFor(() => {
+            const chip = document.querySelector('[data-testid^="bench-delete-"]');
+            if (!chip) throw new Error('the cancelled entry has no delete control yet');
+            return chip as HTMLElement;
+        });
+        const entryCard = deleteChip.closest('[data-testid^="bench-entry-"]') as HTMLElement;
+        expect(entryCard.textContent).toContain('CANCELLED');
+        expect(entryCard.textContent).not.toContain('RUNNING');
+
+        // DELETE it — the record leaves the column and the fleet roll-up
+        await act(async () => {
+            deleteChip.click();
+        });
+
+        await waitFor(() => {
+            expect(document.querySelectorAll('[data-testid^="bench-entry-"]').length).toBe(0);
+        });
+        // The column drops back to its empty state ("0 benchmarks")
+        expect(screen.getByText('0 benchmarks')).toBeTruthy();
+        // The deleted entry was the model's only report → it leaves the footer
+        expect(screen.getByText('0 models')).toBeTruthy();
+
+        cleanup();
+    }, 20000);
 });

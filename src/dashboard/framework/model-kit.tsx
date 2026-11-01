@@ -149,10 +149,11 @@ const createColumn = (spec: ModelBenchSpec) => {
 };
 
 // ── One benchmark entry ──────────────────────────────────────────────────────
-// Header: scenario label + live counter + status chip. While running: the
-// progress strip + one live "N tok received" row per IN-FLIGHT run. Once a
-// report exists (partial OR final): the summary line + per-iteration rows —
-// all updating progressively as runs settle.
+// Header: scenario label + live counter + status chip — the chip is the entry's
+// lifecycle control (RUNNING → CANCEL while in flight, DONE/CANCELLED → DELETE
+// once settled). While running: the progress strip + one live "N tok received"
+// row per IN-FLIGHT run. Once a report exists (partial OR final): the summary
+// line + per-iteration rows — all updating progressively as runs settle.
 const EntryCard = ({ entry }: { entry: BenchEntry }) => {
     const { report, progress } = entry;
     // LIVE STREAMING READOUTS: one per in-flight run (written by the compiled
@@ -174,7 +175,16 @@ const EntryCard = ({ entry }: { entry: BenchEntry }) => {
     // chrome). Hover is tracked in state so the label + palette swap without
     // CSS-selector support in styledComponent's flat input map.
     const [cancelHovered, setCancelHovered] = React.useState(false);
-    // The live shared store — cancelEntry aborts THIS entry's controller
+    // DELETE-AFFORDANCE hover: once the entry SETTLES (cancelled or completed)
+    // its status chip becomes the delete control — same hover pattern as the
+    // RUNNING chip above, so the settled record needs no extra chrome.
+    const [deleteHovered, setDeleteHovered] = React.useState(false);
+    // CANCELLED vs COMPLETED: a cancelled entry carries runs recorded with the
+    // engine's canonical 'cancelled' error (core/runner.ts). Both settled
+    // states are deletable; the label tells the operator which one it is.
+    const cancelled = Boolean(report?.runs.some((run) => run.error === 'cancelled'));
+    // The live shared store — cancelEntry aborts THIS entry's controller,
+    // deleteEntry drops it from the record once settled
     const bench = useBenchDashboard();
     return (
         <EntryShell data-testid={`bench-entry-${entry.id}`}>
@@ -187,9 +197,12 @@ const EntryCard = ({ entry }: { entry: BenchEntry }) => {
                     {report ? ` · ${formatTokensPerSec(report.summary.throughput)} decode` : ''}
                     {report ? ` · ${formatSeconds(report.summary.wallTime)} wall` : ''}
                 </EntryMeta>
-                {/* Status chip: green DONE. While RUNNING it doubles as the
+                {/* Status chip: settled entries read "DONE" (green) or
+                    "CANCELLED" (neutral). While RUNNING the chip doubles as the
                     cancel control: reads "RUNNING" (amber), flips to a
-                    clickable "CANCEL" (danger) on hover. */}
+                    clickable "CANCEL" (danger) on hover. Once settled, the same
+                    chip doubles as the DELETE control — cancelled/completed runs
+                    are removable, running ones are not (cancel first). */}
                 {entry.status === 'running' ? (
                     <EntryCancelButton
                         hovered={cancelHovered ? 'true' : 'false'}
@@ -202,7 +215,17 @@ const EntryCard = ({ entry }: { entry: BenchEntry }) => {
                         {cancelHovered ? 'CANCEL' : 'RUNNING'}
                     </EntryCancelButton>
                 ) : (
-                    <EntryStatusChip status={entry.status}>{entry.status.toUpperCase()}</EntryStatusChip>
+                    <EntryDeleteButton
+                        tone={cancelled ? 'cancelled' : 'done'}
+                        hovered={deleteHovered ? 'true' : 'false'}
+                        onMouseEnter={() => setDeleteHovered(true)}
+                        onMouseLeave={() => setDeleteHovered(false)}
+                        onClick={() => bench.deleteEntry(entry.id)}
+                        aria-label={`Delete ${entry.scenarioLabel} benchmark`}
+                        data-testid={`bench-delete-${entry.id}`}
+                    >
+                        {deleteHovered ? 'DELETE' : cancelled ? 'CANCELLED' : 'DONE'}
+                    </EntryDeleteButton>
                 )}
             </EntryHeader>
 
@@ -555,8 +578,12 @@ const EntryMeta = styledComponent('span', {
     minWidth: 0
 });
 
-// Status chip: tinted per lifecycle (amber running / green done)
-const EntryStatusChip = styledComponent<{ status: string }>('span', {
+// The settled-entry chip doubling as the delete control: reads "DONE" (green
+// tint) or "CANCELLED" (neutral tint) at rest; on hover it flips to a clickable
+// "DELETE" (danger tint) — same geometry as the RUNNING/cancel chip so nothing
+// shifts. Hover/tone are passed as strings ('true'/'false' — nothing leaks into
+// the DOM), matching EntryCancelButton below.
+const EntryDeleteButton = styledComponent<{ tone: string; hovered: string }>('button', {
     fontSize: 10,
     fontWeight: 700,
     letterSpacing: '0.08em',
@@ -564,8 +591,16 @@ const EntryStatusChip = styledComponent<{ status: string }>('span', {
     borderRadius: 999,
     flexShrink: 0,
     fontFamily: benchTheme.sansFont,
-    background: ({ status }) => (status === 'running' ? benchTheme.warningSoft : benchTheme.successSoft),
-    color: ({ status }) => (status === 'running' ? benchTheme.warning : benchTheme.success)
+    cursor: 'pointer',
+    border: 'none',
+    background: ({ hovered, tone }) =>
+        hovered === 'true'
+            ? benchTheme.dangerSoft
+            : tone === 'cancelled'
+                ? benchTheme.surfaceFaint
+                : benchTheme.successSoft,
+    color: ({ hovered, tone }) =>
+        hovered === 'true' ? benchTheme.danger : tone === 'cancelled' ? benchTheme.textSecondary : benchTheme.success
 });
 
 // The RUNNING chip doubling as the cancel control: reads "RUNNING" (amber
