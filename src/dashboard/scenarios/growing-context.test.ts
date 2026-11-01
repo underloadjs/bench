@@ -7,11 +7,14 @@
 //     replays the previous assistant response — each request must be a pure
 //     suffix append of the previous prompt+response (the prefix-reuse
 //     contract). Asserted as EXACT message sequences.
-//   - GROWTH: each conversation's context grows step by step toward the
-//     final token budget, on a uniquely-seeded per-conversation document.
+//   - GROWTH: the conversation's context grows step by step toward the
+//     final 200k token budget, on a uniquely-seeded document.
+//   - PLAN → CALLS: the panel's Iterations IS the request count of the bench
+//     (one conversation, `iterations` growth steps) — no hidden conversation
+//     fan-out, and Concurrency = conversations in flight (one conversation
+//     each).
 //   - PROGRESSIVE FEEDBACK: the entry counter advances per settled step and
 //     the entry settles 'done' with a full report (one run per turn).
-//   - CONCURRENCY: the plan's concurrency = conversations in flight.
 //   - ABORT: a failed turn records the failure and marks the conversation's
 //     remaining steps as skipped so the counter still settles.
 //   - UNSUPPORTED: single-prompt-only providers settle the entry with an
@@ -19,7 +22,12 @@
 import { describe, expect, it, vi } from 'vitest';
 import { launchScenario } from '../framework';
 import type { BenchScenarioPlugin } from '../framework';
-import { growingContextScenario, buildGrowingConversations, CONTEXT_INSTRUCTION } from './growing-context';
+import {
+    growingContextScenario,
+    buildGrowingConversations,
+    CONTEXT_INSTRUCTION,
+    GROWING_CONTEXT_FINAL_TOKENS
+} from './growing-context';
 import { cancelEntryRun, type BenchEntry } from '../context';
 import type { BenchGeneration, BenchMessage, BenchProvider } from '../../core';
 
@@ -55,10 +63,15 @@ const conversationProvider = (calls: BenchMessage[][]): BenchProvider => ({
     }
 });
 
-// Small plan so the suite stays fast: 2 conversations... — NOTE: the case
-// count is fixed at 8 (the original script's default); with steps=1 each
-// conversation makes exactly ONE call, so 8 stub calls total.
+// The minimal plan: 1 growth step × 1 conversation → exactly ONE stub call.
+// (Iterations IS the request count — the pre-fix behaviour of always building
+// 8 conversations made this plan fire 8 calls, which is the glitch under test.)
 const ONE_STEP_PLAN = { iterations: 1, concurrency: 1 };
+
+// The ~ctx figure the scenario logs for a settled turn ("200,062 tok ctx") —
+// the accumulated chars/4 estimate, thousands-separated
+const reportedContextTokens = (logText: string): number =>
+    Number(/([\d,]+) tok ctx/.exec(logText)?.[1]?.replace(/,/g, '') ?? NaN);
 
 // ── The generator ────────────────────────────────────────────────────────────
 
@@ -86,15 +99,18 @@ describe('buildGrowingConversations', () => {
 // ── The scenario ─────────────────────────────────────────────────────────────
 
 describe('growingContextScenario', () => {
-    it('registers with the exact spec (8 conversations, 200k final tokens, sequential default)', () => {
+    it('registers with the exact spec (8 growth steps, 200k final tokens, one conversation default)', () => {
         const scenario = growingContextScenario({} as never) as BenchScenarioPlugin;
 
         expect(scenario.id).toBe('growing-context');
         expect(scenario.name).toBe('Growing Context Scenario');
         expect(scenario.spec.label).toBe('Growing Context');
         expect(scenario.spec.icon).toBe('📚');
+        // 8 growth steps = 8 requests per bench, ONE conversation (concurrency 1)
         expect(scenario.spec.iterations).toBe(8);
         expect(scenario.spec.concurrency).toBe(1);
+        // THE CONTEXT TARGET: the conversation grows to 200k est. tokens
+        expect(GROWING_CONTEXT_FINAL_TOKENS).toBe(200_000);
         // The fixed summary instruction doubles as the display prompt
         expect(scenario.spec.prompt).toBe(CONTEXT_INSTRUCTION);
     });
@@ -109,32 +125,70 @@ describe('growingContextScenario', () => {
             modelLabel: 'ctx-model',
             provider: conversationProvider(calls),
             actions: recorder.actions,
-            plan: { iterations: 2, concurrency: 1 },
+            // 2 growth steps × 2 conversations (Concurrency = conversations in
+            // flight, ONE conversation each) = 4 turns
+            plan: { iterations: 2, concurrency: 2 },
             timing: {}
         });
 
-        // 8 conversations × 2 steps = 16 streamed turns
-        expect(calls.length).toBe(16);
+        expect(calls.length).toBe(4);
 
-        // CONTINUATION CONTRACT, asserted exactly on conversation 1:
-        // call 1 — just the first segment + instruction
-        const expectedFirstTurn: BenchMessage[] = [{ role: 'user', content: buildGrowingConversations(2, 200000)[0].steps[0] }];
-        expect(calls[0]).toEqual(expectedFirstTurn);
+        // CONTINUATION CONTRACT, asserted exactly on EVERY conversation:
+        // its first call is just the first segment + the fixed instruction;
+        // its second call is the FULL history replay — the previous assistant
+        // response comes back VERBATIM, then the next segment is appended, so
+        // each request is a pure suffix append of the previous prompt+response.
+        for (const conversation of buildGrowingConversations(2, GROWING_CONTEXT_FINAL_TOKENS, 2)) {
+            const turns = calls.filter((messages) => messages[0]?.content === conversation.steps[0]);
+            expect(turns.length).toBe(2);
 
-        // call 2 — FULL history replay: first user turn + the previous
-        // assistant response (replayed VERBATIM) + the next segment. Each
-        // request is a pure suffix append of the previous prompt+response.
-        const conversation = buildGrowingConversations(2, 200000)[0];
-        expect(calls[1]).toEqual([
-            { role: 'user', content: conversation.steps[0] },
-            { role: 'assistant', content: 'abcd' },
-            { role: 'user', content: conversation.steps[1] }
-        ]);
+            const [firstTurn, secondTurn] = turns;
+            expect(firstTurn).toEqual([{ role: 'user', content: conversation.steps[0] }]);
+            expect(secondTurn).toEqual([
+                { role: 'user', content: conversation.steps[0] },
+                { role: 'assistant', content: 'abcd' },
+                { role: 'user', content: conversation.steps[1] }
+            ]);
+        }
 
-        // Conversation 2 starts its OWN history (a different seeded document)
-        const conversation2 = buildGrowingConversations(2, 200000)[1];
-        expect(calls[2]).toEqual([{ role: 'user', content: conversation2.steps[0] }]);
-        expect(calls[2][0].content).not.toBe(calls[0][0].content);
+        // The conversations each grow their OWN seeded document (2 distinct
+        // first turns across the 4 calls)
+        expect(new Set(calls.map((messages) => messages[0].content)).size).toBe(2);
+    });
+
+    it('iterations 1 sends exactly ONE request at the full 200k context (no hidden fan-out)', async () => {
+        // THE GLITCH UNDER TEST: the suite used to build GROWING_CONTEXT_CASES
+        // (8) conversations no matter the plan, so "Iterations 1" fired EIGHT
+        // calls per bench. The case count now follows Concurrency, so one
+        // iteration is ONE request — and that request carries the WHOLE 200k
+        // context (the document is not split when there is a single step).
+        const recorder = recordActions();
+        const calls: BenchMessage[][] = [];
+
+        await launchScenario({
+            scenario: growingContextScenario({} as never) as BenchScenarioPlugin,
+            modelId: 'ctx-model',
+            modelLabel: 'ctx-model',
+            provider: conversationProvider(calls),
+            actions: recorder.actions,
+            plan: ONE_STEP_PLAN,
+            timing: {}
+        });
+
+        // ONE call, ONE user turn — nothing else was sent
+        expect(calls.length).toBe(1);
+        expect(calls[0]).toHaveLength(1);
+
+        // THE 200k CONTEXT: the segment is the full finalTokens × 4 char
+        // document, plus the fixed instruction the first turn always carries
+        const segment = calls[0][0].content;
+        expect(segment.endsWith(CONTEXT_INSTRUCTION)).toBe(true);
+        expect(segment.length).toBe(GROWING_CONTEXT_FINAL_TOKENS * 4 + 1 + CONTEXT_INSTRUCTION.length);
+        // The turn's own context reading lands on 200k (chars/4 estimate)
+        expect(reportedContextTokens(recorder.logs[0].text)).toBeGreaterThanOrEqual(GROWING_CONTEXT_FINAL_TOKENS);
+
+        // The entry settles on that single step
+        expect(recorder.entries[0].progress).toEqual({ completed: 1, failed: 0, total: 1 });
     });
 
     it('advances the entry progressively and settles it done with one run per turn', async () => {
@@ -153,11 +207,11 @@ describe('growingContextScenario', () => {
 
         const entry = recorder.entries[0];
         expect(entry.status).toBe('done');
-        // 8 conversations × 1 step = 8 runs, all successful
-        expect(entry.progress).toEqual({ completed: 8, failed: 0, total: 8 });
-        expect(entry.report?.runs.length).toBe(8);
+        // 1 conversation × 1 step = ONE run, successful
+        expect(entry.progress).toEqual({ completed: 1, failed: 0, total: 1 });
+        expect(entry.report?.runs.length).toBe(1);
         expect(entry.report?.summary).toEqual(
-            expect.objectContaining({ model: 'ctx-model', runCount: 8, completedRuns: 8, failedRuns: 0, successRate: 1 })
+            expect.objectContaining({ model: 'ctx-model', runCount: 1, completedRuns: 1, failedRuns: 0, successRate: 1 })
         );
         // Per-turn token accounting prefers the provider usage (10 / 4 / 14)
         expect(entry.report?.runs[0]).toEqual(
@@ -172,9 +226,9 @@ describe('growingContextScenario', () => {
         expect(firstRun!.tokensPerSec).toBe(
             firstRun!.totalTime - firstRun!.ttft > 0 ? firstRun!.completionTokens / (firstRun!.totalTime - firstRun!.ttft) : 0
         );
-        // One log line per streamed turn (step counter + conversation name)
+        // Exactly ONE log line for the ONE turn (step counter + conversation name)
+        expect(recorder.logs).toHaveLength(1);
         expect(recorder.logs[0].text).toContain('step 1/1 — case-1 → 200k ctx:');
-        expect(recorder.logs[7].text).toContain('step 1/1 — case-8 → 200k ctx:');
     });
 
     it('streams live per-turn readouts into the entry and clears each on settle', async () => {
@@ -211,28 +265,21 @@ describe('growingContextScenario', () => {
             timing: {}
         });
 
-        // 8 conversations × 1 step = 8 streamed turns. Patch sequence: the
-        // run's reset (empty strip), then per turn its live push (4 chars →
+        // 1 conversation × 1 step = ONE streamed turn. Patch sequence: the
+        // run's reset (empty strip), then the turn's live push (4 chars →
         // 1 est. token) followed by the publish clear (the settled turn's
         // readout leaves the entry). The live rate is the DECODE speed —
         // streamed tokens over the post-TTFT phase — so the FIRST tick of
-        // each turn reads exactly 0 (elapsed == ttft → empty phase, same
+        // the turn reads exactly 0 (elapsed == ttft → empty phase, same
         // definition as the settled run) and later ticks go positive.
         // elapsed is a real-clock reading, hence only the deterministic
         // fields are asserted exactly:
-        expect(streamPatches.length).toBe(17); // reset + 8 live pushes + 8 publish clears
+        expect(streamPatches.length).toBe(3); // reset + live push + publish clear
         expect(streamPatches[0]).toEqual([]);
         const firstTick = (streamPatches[1] as NonNullable<BenchEntry['streaming']>)[0];
         expect(firstTick).toEqual(expect.objectContaining({ index: 0, chars: 4, tokens: 1, tokensPerSec: 0 }));
+        // The settled turn's readout leaves the strip
         expect(streamPatches[2]).toEqual([]);
-        const secondTick = (streamPatches[3] as NonNullable<BenchEntry['streaming']>)[0];
-        expect(secondTick).toEqual(expect.objectContaining({ index: 1, chars: 4, tokens: 1 }));
-        // Every turn emits exactly ONE chunk → every tick is its turn's
-        // first → decode phase empty → rate exactly 0
-        expect(secondTick.tokensPerSec).toBe(0);
-        const lastTick = (streamPatches[15] as NonNullable<BenchEntry['streaming']>)[0];
-        expect(lastTick).toEqual(expect.objectContaining({ index: 7, chars: 4, tokens: 1 }));
-        expect(streamPatches[16]).toEqual([]);
         // The entry settles with the streaming strip fully cleared
         expect(recorder.entries[0].streaming).toEqual([]);
     });
@@ -240,15 +287,15 @@ describe('growingContextScenario', () => {
     it('aborts a conversation on a failed turn and marks the remaining steps skipped', async () => {
         const recorder = recordActions();
         const calls: BenchMessage[][] = [];
-        let callCount = 0;
-        // Every conversation's SECOND turn fails → each conversation aborts
-        // with its remaining steps marked skipped
+        // EVERY conversation's second turn fails (a 3-message history is the
+        // second turn — first user + replayed answer + new segment) → each
+        // conversation aborts and its third step is recorded as skipped, while
+        // the other conversation still runs its own turns
         const flakyProvider: BenchProvider = {
             model: 'ctx-model',
             generateConversation: async (messages: BenchMessage[]) => {
                 calls.push(messages);
-                callCount += 1;
-                if (calls.length % 2 === 0) throw new Error('ctx overflow');
+                if (messages.length === 3) throw new Error('ctx overflow');
                 return { content: 'ok', model: 'ctx-model' };
             }
         };
@@ -259,24 +306,36 @@ describe('growingContextScenario', () => {
             modelLabel: 'ctx-model',
             provider: flakyProvider,
             actions: recorder.actions,
-            plan: { iterations: 2, concurrency: 1 },
+            // 3 growth steps × 2 conversations = 6 planned runs
+            plan: { iterations: 3, concurrency: 2 },
             timing: {}
         });
 
         const entry = recorder.entries[0];
-        // Every conversation: 1 success + 1 failure — the counter settles
-        expect(entry.progress).toEqual({ completed: 16, failed: 8, total: 16 });
+        // Per conversation: 1 success + 1 failure + 1 skipped → the counter
+        // still settles at completed == total
+        expect(entry.progress).toEqual({ completed: 6, failed: 4, total: 6 });
         expect(entry.status).toBe('done');
-        // With concurrency 1 the second turn of the FIRST conversation fails
-        // and its remaining steps (none, steps=2) are skipped — conversation
-        // 2 still runs (the failure does not take down the suite)
+        // Only the first two turns of each conversation ever reached the
+        // provider — the skipped step is recorded, not sent
+        expect(calls.length).toBe(4);
+        // Conversation 1 owns slots 0-2, conversation 2 slots 3-5: BOTH chains
+        // break the same way (the failure does not take down the suite)
+        expect(entry.report?.runs.map((run) => run.error)).toEqual([
+            undefined,
+            'ctx overflow',
+            'skipped: conversation aborted after step 2 failed',
+            undefined,
+            'ctx overflow',
+            'skipped: conversation aborted after step 2 failed'
+        ]);
         expect(entry.report?.summary).toEqual(
-            expect.objectContaining({ runCount: 16, completedRuns: 8, failedRuns: 8, successRate: 0.5 })
+            expect.objectContaining({ runCount: 6, completedRuns: 2, failedRuns: 4, successRate: 2 / 6 })
         );
         expect(recorder.logs.some((line) => line.tone === 'error' && line.text.includes('FAILED (ctx overflow)'))).toBe(true);
     });
 
-    it('cancels the suite: the in-flight turn aborts and every remaining turn is recorded as cancelled', async () => {
+    it('cancels the conversation: the in-flight turn aborts and every remaining turn is recorded as cancelled', async () => {
         const recorder = recordActions();
         const calls: BenchMessage[][] = [];
         let hangStarted = false;
@@ -306,11 +365,12 @@ describe('growingContextScenario', () => {
             modelLabel: 'ctx-model',
             provider: cancelProvider,
             actions: recorder.actions,
-            plan: { iterations: 2, concurrency: 1 },
+            // ONE conversation of 4 growth steps
+            plan: { iterations: 4, concurrency: 1 },
             timing: {}
         });
 
-        // Wait until conversation 1's SECOND turn is in flight, then cancel
+        // Wait until the conversation's SECOND turn is in flight, then cancel
         // through the real store registry (the entry card's CANCEL path)
         await vi.waitFor(() => expect(hangStarted).toBe(true));
         cancelEntryRun(recorder.entries[0].id);
@@ -318,14 +378,19 @@ describe('growingContextScenario', () => {
 
         const entry = recorder.entries[0];
         expect(entry.status).toBe('done');
-        // 8 conversations × 2 steps = 16 turns: only turn 1 completed
-        expect(entry.progress).toEqual({ completed: 16, failed: 15, total: 16 });
-        expect(entry.report?.summary).toEqual(expect.objectContaining({ runCount: 16, completedRuns: 1, failedRuns: 15 }));
-        // Turn 2 (in-flight at cancel) AND every not-yet-started turn
-        // (conversations 2-8 never began — sequential mode) read 'cancelled'
-        expect(entry.report?.runs[1].error).toBe('cancelled');
-        expect(entry.report?.runs[15].error).toBe('cancelled');
-        expect(entry.report?.runs[0].error).toBeUndefined();
+        // 4 planned turns: only turn 1 completed
+        expect(entry.progress).toEqual({ completed: 4, failed: 3, total: 4 });
+        expect(entry.report?.summary).toEqual(expect.objectContaining({ runCount: 4, completedRuns: 1, failedRuns: 3 }));
+        // Turn 2 (in-flight at cancel) AND every later turn of the conversation
+        // read 'cancelled' — the chain stops without contacting the provider
+        expect(entry.report?.runs.map((run) => run.error)).toEqual([
+            undefined,
+            'cancelled',
+            'cancelled',
+            'cancelled'
+        ]);
+        // Two requests only: the settled turn + the aborted in-flight one
+        expect(calls.length).toBe(2);
     });
 
     it('settles the entry with an error when the provider has no conversation transport', async () => {

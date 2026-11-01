@@ -23,6 +23,7 @@ import { shortStoryScenario } from './short-story';
 import { summarizationScenario } from './summarization';
 import { brainstormScenario } from './brainstorm';
 import { growingContextScenario } from './growing-context';
+import { roleplayingScenario } from './roleplaying';
 import { toolCallScenario } from './tool-call';
 import { toolParallelScenario } from './tool-parallel';
 import { toolArgsScenario } from './tool-args';
@@ -36,6 +37,7 @@ export const SCENARIOS: BenchScenarioFactory[] = [
     summarizationScenario,
     brainstormScenario,
     growingContextScenario,
+    roleplayingScenario,
     toolCallScenario,
     toolParallelScenario,
     toolArgsScenario

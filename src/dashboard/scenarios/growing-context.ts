@@ -2,23 +2,29 @@
 //
 // Converted from the repo-root benchmark-server.ts script (removed after the
 // conversion): the agentic CONTEXT TEST. Instead of one fixed prompt it
-// emulates N CONCURRENT agent conversations whose context GROWS every turn:
+// emulates an AGENT CONVERSATION whose context GROWS every turn, up to
+// GROWING_CONTEXT_FINAL_TOKENS (200k est. tokens):
 //
-//   - each conversation owns one uniquely-seeded synthetic document
+//   - the conversation owns one uniquely-seeded synthetic document
 //     (GROWING_CONTEXT_FINAL_TOKENS est. tokens, Park-Miller LCG — the same
 //     deterministic generator family as packages/test/models
 //     benchmark-model.ts buildGrowingContexts);
 //   - the document is split into `steps` DISJOINT segments (the panel's
-//     Iterations select drives the step count); step k's USER TURN is the
-//     k-th segment, the first also carrying the fixed summary instruction;
+//     Iterations select drives the step count = the calls this bench makes —
+//     iterations 1 therefore sends ONE request carrying the FULL 200k context,
+//     never a hidden extra fan-out); step k's USER TURN is the k-th segment,
+//     the first also carrying the fixed summary instruction;
 //   - every turn resends the ENTIRE prior conversation plus the new segment
 //     and replays the assistant response into the history — CONTINUATION is
 //     REQUIRED for per-lane prefix reuse (ninfer-serve append_frontier): a
 //     request only hits the resident prefix when it is a pure suffix append
 //     of the previous prompt+response, so a flattened single message would
 //     diverge and pay a full re-prefill;
-//   - the panel's Concurrency select = conversations in flight (1 = the
-//     original script's sequential mode, which isolates per-lane reuse).
+//   - Concurrency = conversations in flight, ONE conversation each: through the
+//     panel it fans the run out into that many parallel bench entries (lanes —
+//     model-kit/host.tsx), so N lanes = N conversations growing N separate
+//     documents; 1 stays the original script's sequential mode, which isolates
+//     per-lane reuse.
 //
 // Progress is reported PER STEP (each streamed turn is one recorded run) and
 // the entry settles with a full BenchmarkReport. Speed semantics: the two
@@ -40,8 +46,11 @@ import type { BenchStreamState } from '../context';
 
 // ── Scenario constants (the original script's defaults) ──────────────────────
 
-// Concurrent conversations in the suite (the original buildGrowingContexts
-// default: 8 conversations → at the final step all carry ~200k context each)
+// Default conversation count of the GENERATED suite (the original
+// buildGrowingContexts default: 8 conversations → at the final step all carry
+// ~200k context each). It is only the generator's fallback — the scenario
+// executor passes the plan's Concurrency as the case count, so the bench never
+// silently multiplies its call count by this number.
 export const GROWING_CONTEXT_CASES = 8;
 
 // Context size EACH conversation reaches at its final growth step (the
@@ -211,16 +220,21 @@ const executeGrowingContext = async (helper: BenchScenarioHelper) => {
         return;
     }
 
-    // Plan mapping: Iterations select = growth steps per conversation,
-    // Concurrency = conversations in flight. NOTE: through the panel
-    // dispatch the Concurrency select is consumed UPSTREAM as parallel bench
-    // lanes (model-kit handleRun fans out one entry per lane with
-    // concurrency 1) — each lane runs the full suite with its conversations
-    // sequential. Direct helper callers (tests) can still pin concurrency
-    // here to run this single suite's conversations in parallel.
+    // Plan mapping — NO hidden multiplier, the panel's numbers are the whole
+    // story:
+    //   Iterations  = the conversation's growth steps = the requests THIS entry
+    //                 sends (iterations 1 → ONE request carrying the full 200k
+    //                 context), run sequentially so each is a pure continuation
+    //   Concurrency = conversations in flight, ONE conversation each
+    // Through the panel dispatch the Concurrency select is consumed UPSTREAM as
+    // parallel bench LANES (framework/host.tsx fans out one entry per lane with
+    // concurrency 1) — every lane grows its own seeded document, and each
+    // lane's call count stays exactly the Iterations value. Direct helper
+    // callers (tests) pin concurrency HERE to run several conversations inside
+    // ONE entry.
     const steps = plan.iterations;
     const inFlight = plan.concurrency;
-    const conversations = buildGrowingConversations(steps);
+    const conversations = buildGrowingConversations(steps, GROWING_CONTEXT_FINAL_TOKENS, inFlight);
     const totalRuns = conversations.length * steps;
 
     // Initial counter (launchScenario already created the entry 'running')
@@ -495,8 +509,11 @@ const executeGrowingContext = async (helper: BenchScenarioHelper) => {
 
 // ── The scenario plugin ──────────────────────────────────────────────────────
 // Spec: the summary instruction doubles as the display prompt (it IS the
-// fixed suffix of every first turn). Iterations default 8 / concurrency
-// default 1 — the original script's shape; the panel's selects re-pin both.
+// fixed suffix of every first turn). Iterations default 8 — the growth curve
+// from ~25k to ~200k context in 8 turns, i.e. 8 requests — and concurrency
+// default 1 (one conversation). The panel's selects re-pin both; Iterations is
+// ALWAYS the request count of the bench, never multiplied behind the operator's
+// back.
 export const growingContextScenario: BenchScenarioFactory = () =>
     defineBenchScenario({
         id: 'growing-context',
@@ -505,7 +522,7 @@ export const growingContextScenario: BenchScenarioFactory = () =>
             id: 'growing-context',
             label: 'Growing Context',
             icon: '📚',
-            description: `Agentic context growth — ${GROWING_CONTEXT_CASES} conversations extend to ~200k est. tokens with strict continuation (prefix-reuse probe)`,
+            description: `Agentic context growth — the conversation extends to ~${Math.round(GROWING_CONTEXT_FINAL_TOKENS / 1000)}k est. tokens with strict continuation (prefix-reuse probe); Iterations = growth steps (requests), Concurrency = conversations in flight`,
             prompt: CONTEXT_INSTRUCTION,
             iterations: 8,
             concurrency: 1
