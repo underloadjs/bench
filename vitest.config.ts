@@ -13,6 +13,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { defineConfig } from 'vitest/config';
+import { formatBuildStamp } from './src/build-stamp.ts';
 
 // Mirror vite.config.ts's `__APP_VERSION__` define so the tests resolve the
 // application version from the same single source (this package's
@@ -24,9 +25,15 @@ const APP_VERSION = (JSON.parse(
     fs.readFileSync(new URL('./package.json', import.meta.url), 'utf-8'),
 ) as { version: string }).version;
 
+// Mirror vite.config.ts's `__APP_BUILD_STAMP__` define for the same reason:
+// the tests render the real product title ("Bench v{version}({stamp})") and
+// derive its expected value from these very sources (src/build-stamp.ts).
+const APP_BUILD_STAMP = formatBuildStamp(new Date());
+
 export default defineConfig({
     define: {
-        __APP_VERSION__: JSON.stringify(APP_VERSION)
+        __APP_VERSION__: JSON.stringify(APP_VERSION),
+        __APP_BUILD_STAMP__: JSON.stringify(APP_BUILD_STAMP)
     },
     resolve: {
         alias: {
