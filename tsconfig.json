@@ -10,6 +10,11 @@
         "module": "ESNext",
         "target": "ESNext",
         "moduleResolution": "bundler",
+        // The vite/vitest configs are loaded natively (no bundling), which
+        // requires explicit extensions on their relative imports — e.g.
+        // `./src/build-stamp.ts`. Declarations here come from `tsc --noEmit`
+        // only (the shipped JS is Vite's), so extensioned imports are safe.
+        "allowImportingTsExtensions": true,
         "jsx": "react",
         "skipLibCheck": true,
         "allowJs": true,

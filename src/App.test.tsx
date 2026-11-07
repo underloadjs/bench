@@ -20,21 +20,23 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi, afterEach } from 'vitest';
 import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react';
 import { App } from './App';
+import { formatBuildStamp } from './build-stamp';
 import { DEFAULT_PROVIDER_URL, BENCH_PROMPT, BENCH_ITERATIONS, catalogToPluginFactories } from './index';
 
 // The dialog/header brand title is the VERSIONED product name —
-// "Bench v<version>" (PRODUCT_TITLE in src/version.ts, version read from
-// this package's package.json). Derive the expected value from the real
-// package.json — the same single source vite.config.ts and vitest.config.ts
-// inject as the `__APP_VERSION__` define — so the assertion cannot drift
-// from the value the shipped bundle renders. `npm test` always runs vitest
-// from the package root (vitest.config.ts is resolved from that cwd), so
-// 'package.json' is cwd-relative; the jsdom test environment rewrites
-// import.meta.url, so a URL-based path would be a non-file scheme (same
-// convention as distribution/chat-assistant's ChatAssistantApp test).
+// "Bench v<version>(<build stamp>)" (PRODUCT_TITLE in src/version.ts). Derive
+// the expected value from the real package.json — the same single source
+// vite.config.ts and vitest.config.ts inject as the `__APP_VERSION__` define —
+// and from the SAME build-stamp formatter both configs use for
+// `__APP_BUILD_STAMP__`, so the assertion cannot drift from the value the
+// shipped bundle renders. `npm test` always runs vitest from the package root
+// (vitest.config.ts is resolved from that cwd), so 'package.json' is
+// cwd-relative; the jsdom test environment rewrites import.meta.url, so a
+// URL-based path would be a non-file scheme (same convention as
+// distribution/chat-assistant's ChatAssistantApp test).
 const EXPECTED_PRODUCT_TITLE = `Bench v${JSON.parse(
     readFileSync('package.json', 'utf-8')
-).version as string}`;
+).version as string}(${formatBuildStamp(new Date())})`;
 
 // ── Fetch stub plumbing ──────────────────────────────────────────────────────
 

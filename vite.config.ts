@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { defineConfig } from 'vite';
 import react from '@vitejs/plugin-react';
+import { formatBuildStamp } from './src/build-stamp.ts';
 
 // Application version: read once from this package's package.json and pinned
 // into the bundle as the __APP_VERSION__ define (see src/version.ts) so the
@@ -20,12 +21,20 @@ const APP_VERSION = (JSON.parse(
     fs.readFileSync(new URL('./package.json', import.meta.url), 'utf-8'),
 ) as { version: string }).version;
 
+// Build stamp: the build machine's DDHHMM, pinned the same way as
+// __APP_BUILD_STAMP__ so the title names the artifact that was built
+// ("Bench v{version}(081345)") and never the visitor's clock. GitHub Actions
+// runners are UTC, so a CI build stamps the UTC day and time it ran
+// (./src/build-stamp.ts).
+const APP_BUILD_STAMP = formatBuildStamp(new Date());
+
 export default defineConfig({
     plugins: [react()],
     define: {
-        // Compile-time constant — replaced with the literal version string
-        // (e.g. "1.0.2") in both dev and build output.
-        __APP_VERSION__: JSON.stringify(APP_VERSION)
+        // Compile-time constants — replaced with the literal strings in both
+        // dev and build output (e.g. "1.0.2" and "081345").
+        __APP_VERSION__: JSON.stringify(APP_VERSION),
+        __APP_BUILD_STAMP__: JSON.stringify(APP_BUILD_STAMP)
     },
     resolve: {
         alias: {

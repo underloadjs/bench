@@ -50,8 +50,8 @@ const BrandMark = styledComponent('div', {
     flexShrink: 0
 });
 
-// Versioned product name ("Bench v<version>" — PRODUCT_TITLE from
-// src/version.ts, version read from package.json)
+// Versioned product name ("Bench v<version>(<build stamp>)" — PRODUCT_TITLE from
+// src/version.ts, version read from package.json, date from the build)
 const BrandTitle = styledComponent('span', {
     fontSize: 16,
     fontWeight: 700,
